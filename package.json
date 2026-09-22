@@ -1,0 +1,76 @@
+{
+  "name": "@skmdev/prisma-fixtures",
+  "version": "0.1.0",
+  "description": "YAML and JSON fixtures with references, templates and processors for Prisma.",
+  "license": "MIT",
+  "author": "skmdev <skmdev29@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/skmdev/prisma-fixtures.git"
+  },
+  "homepage": "https://github.com/skmdev/prisma-fixtures#readme",
+  "bugs": "https://github.com/skmdev/prisma-fixtures/issues",
+  "keywords": [
+    "prisma",
+    "fixtures",
+    "yaml",
+    "seed",
+    "testing"
+  ],
+  "type": "commonjs",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "prisma-fixtures": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "prettier --check .",
+    "format": "prettier --write .",
+    "test": "npm run build && node --test test/*.test.cjs",
+    "test:integration": "node test/integration.cjs",
+    "verify": "npm run lint && npm run typecheck && npm test",
+    "prepack": "npm run build"
+  },
+  "dependencies": {
+    "@faker-js/faker": "10.6.0",
+    "ejs": "6.0.1",
+    "yaml": "2.9.1"
+  },
+  "devDependencies": {
+    "@prisma/adapter-pg": "7.10.0",
+    "@prisma/client": "7.10.0",
+    "@types/ejs": "3.1.5",
+    "@types/node": "22.19.15",
+    "prettier": "3.8.3",
+    "prisma": "7.10.0",
+    "typescript": "5.9.3"
+  },
+  "overrides": {
+    "@prisma/config": {
+      "deepmerge-ts": "8.0.0"
+    },
+    "prisma": {
+      "mysql2": "3.24.4"
+    }
+  }
+}

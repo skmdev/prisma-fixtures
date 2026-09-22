@@ -1,0 +1,9 @@
+node_modules/
+dist/
+*.tgz
+.scratch/
+test/generated/
+.env*
+!.env.example
+*.pem
+*.key
