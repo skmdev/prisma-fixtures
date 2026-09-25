@@ -1,0 +1,38 @@
+name: Publish to npm
+on:
+  release:
+    types: [published]
+permissions:
+  contents: read
+concurrency:
+  group: npm-publish
+  cancel-in-progress: false
+jobs:
+  verify:
+    if: ${{ !github.event.release.prerelease }}
+    uses: ./.github/workflows/ci.yml
+  publish:
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24'
+          registry-url: https://registry.npmjs.org
+      - name: Check release version
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          node -e 'const assert = require("node:assert/strict"); const { version } = require("./package.json"); assert.match(version, /^\d+\.\d+\.\d+$/); assert.equal(process.env.RELEASE_TAG, "v" + version)'
+      - run: npm install --global npm@11
+      - run: npm ci
+      - run: npm publish --access public
+        env:
+          # Optional, only for the first publish before npm trusted publishing exists.
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
