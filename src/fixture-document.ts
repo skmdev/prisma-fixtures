@@ -73,6 +73,21 @@ const FIELD_PATTERN = /^[A-Za-z][A-Za-z0-9_]*$/
 const RANGE_PATTERN = /^([A-Za-z][A-Za-z0-9_-]*)\{(\d+)\.\.(\d+)\}$/
 const CURRENT_PATTERN = /\(\$current(?:([+\-*/])(\d+))?\)/g
 
+export function readFixturePaths(
+  targets: string[],
+  validateDocument?: (value: unknown, file: string) => void,
+): FixtureDefinition[] {
+  const definitions = targets.flatMap((target) =>
+    readFixtureDocuments(path.resolve(target), validateDocument),
+  )
+  if (
+    new Set(definitions.map(({ name }) => name)).size !== definitions.length
+  ) {
+    throw new FixtureDocumentError('Duplicate fixture name across paths')
+  }
+  return definitions
+}
+
 export function readFixtureDocuments(
   targetPath: string,
   validateDocument?: (value: unknown, file: string) => void,
@@ -210,15 +225,7 @@ function normalizeDocument(
     items,
   } = value
   if (!isFixtureRecord(items)) throw invalidDocument(file)
-  assertFixtureMetadata(
-    entity,
-    parameters,
-    processor,
-    locale,
-    connectedFields,
-    deferredFields,
-    file,
-  )
+  assertFixtureMetadata({ ...value, parameters }, file)
 
   const definitions: FixtureDefinition[] = []
   const fixtureProcessor =
@@ -354,24 +361,8 @@ export function assertFixtureDefinition(
     'connectedFields',
     'deferredFields',
   ])
-  const {
-    name,
-    entity,
-    data,
-    parameters,
-    processor,
-    locale,
-    connectedFields,
-    deferredFields,
-  } = value
-  assertFixtureMetadata(
-    entity,
-    parameters,
-    processor,
-    locale,
-    connectedFields,
-    deferredFields,
-  )
+  const { name, data, deferredFields } = value
+  assertFixtureMetadata(value)
   if (
     typeof name !== 'string' ||
     !NAME_PATTERN.test(name) ||
@@ -392,14 +383,17 @@ export function assertFixtureDefinition(
 }
 
 function assertFixtureMetadata(
-  entity: unknown,
-  parameters: unknown,
-  processor: unknown,
-  locale: unknown,
-  connectedFields: unknown,
-  deferredFields: unknown,
+  metadata: Record<string, unknown>,
   file?: string,
 ) {
+  const {
+    entity,
+    parameters,
+    processor,
+    locale,
+    connectedFields,
+    deferredFields,
+  } = metadata
   if (
     typeof entity !== 'string' ||
     !NAME_PATTERN.test(entity) ||
@@ -408,29 +402,30 @@ function assertFixtureMetadata(
     (processor !== undefined &&
       (typeof processor !== 'string' || !processor)) ||
     (locale !== undefined && (typeof locale !== 'string' || !locale)) ||
-    (connectedFields !== undefined &&
-      (!Array.isArray(connectedFields) ||
-        connectedFields.some(
-          (field) =>
-            typeof field !== 'string' ||
-            !FIELD_PATTERN.test(field) ||
-            DANGEROUS_KEYS.has(field),
-        ) ||
-        new Set(connectedFields).size !== connectedFields.length)) ||
+    (connectedFields !== undefined && !isFieldList(connectedFields)) ||
     (deferredFields !== undefined &&
-      (!Array.isArray(deferredFields) ||
+      (!isFieldList(deferredFields) ||
         deferredFields.length === 0 ||
         deferredFields.some(
           (field) =>
-            typeof field !== 'string' ||
-            !FIELD_PATTERN.test(field) ||
-            DANGEROUS_KEYS.has(field) ||
-            (Array.isArray(connectedFields) && connectedFields.includes(field)),
-        ) ||
-        new Set(deferredFields).size !== deferredFields.length))
+            Array.isArray(connectedFields) && connectedFields.includes(field),
+        )))
   ) {
     throw file ? invalidDocument(file) : new Error('Invalid fixture definition')
   }
+}
+
+function isFieldList(value: unknown): value is string[] {
+  return (
+    Array.isArray(value) &&
+    value.every(
+      (field) =>
+        typeof field === 'string' &&
+        FIELD_PATTERN.test(field) &&
+        !DANGEROUS_KEYS.has(field),
+    ) &&
+    new Set(value).size === value.length
+  )
 }
 
 export function isFixtureRecord(

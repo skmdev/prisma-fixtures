@@ -146,9 +146,8 @@ function renderValue(
 function fakeValue(expression: string, faker: FakerInstance): unknown {
   const match = expression.trim().match(/^(\w+)\.(\w+)(?:\(([\s\S]*)\))?$/)
   if (!match) throw new Error('Invalid Faker provider')
-  let [, group, method] = match
+  const [group, method] = modernProvider(match[1]!, match[2]!)
   const argument = match[3]
-  ;[group, method] = modernProvider(group!, method!)
   if (DANGEROUS_KEYS.has(group) || DANGEROUS_KEYS.has(method)) {
     throw new Error('Invalid Faker provider')
   }
@@ -255,7 +254,7 @@ function requiresNativeImport(error: unknown): boolean {
   if (error === null || typeof error !== 'object' || !('code' in error)) {
     return false
   }
-  const code = (error as { code?: unknown }).code
+  const code = error.code
   return code === 'ERR_REQUIRE_ESM' || code === 'ERR_REQUIRE_ASYNC_MODULE'
 }
 

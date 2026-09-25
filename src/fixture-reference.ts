@@ -30,7 +30,7 @@ export function lintFixtureReferences(definitions: FixtureDefinition[]): {
     unresolved += lintValue(fixture.data, byName, found, fixture, '')
     dependencies.set(fixture.name, found)
   }
-  assertNoDefiniteCycles(definitions, dependencies)
+  orderFixtures(definitions, dependencies, 'linting references')
   return { unresolved }
 }
 
@@ -115,35 +115,6 @@ function lintValue(
   return 0
 }
 
-function assertNoDefiniteCycles(
-  definitions: FixtureDefinition[],
-  dependencies: Map<string, Dependency[]>,
-) {
-  const byName = new Map(definitions.map((fixture) => [fixture.name, fixture]))
-  const state = new Map<string, 'visiting' | 'visited'>()
-  const stack: string[] = []
-  const visit = (fixture: FixtureDefinition) => {
-    if (state.get(fixture.name) === 'visited') return
-    state.set(fixture.name, 'visiting')
-    stack.push(fixture.name)
-    for (const dependency of dependencies.get(fixture.name) ?? []) {
-      if (state.get(dependency.name) === 'visiting') {
-        const start = stack.indexOf(dependency.name)
-        const cycle = [...stack.slice(start), dependency.name].join(' -> ')
-        throw createFixtureError(
-          'FIXTURE_DEPENDENCY_CYCLE',
-          `Fixture dependency cycle: ${cycle}`,
-          fixtureErrorContext(fixture, 'linting references', dependency.path),
-        )
-      }
-      visit(byName.get(dependency.name)!)
-    }
-    stack.pop()
-    state.set(fixture.name, 'visited')
-  }
-  definitions.forEach(visit)
-}
-
 export function prepareFixtureReferences(
   definitions: FixtureDefinition[],
   random: { next: () => number } = { next: Math.random },
@@ -167,7 +138,11 @@ export function prepareFixtureReferences(
     inheritFixtureSource(fixture, result)
     return result
   })
-  return orderFixtures(prepared)
+  return orderFixtures(
+    prepared,
+    new Map(prepared.map(({ name, dependencies }) => [name, dependencies])),
+    'ordering fixtures',
+  )
 }
 
 function prepareValue(
@@ -316,27 +291,28 @@ function pick<T>(values: T[], random: { next: () => number }) {
   return values[Math.floor(random.next() * values.length)]!
 }
 
-function orderFixtures(fixtures: PreparedFixture[]) {
+function orderFixtures<T extends FixtureDefinition>(
+  fixtures: T[],
+  dependencies: Map<string, Dependency[]>,
+  stage: string,
+): T[] {
   const byName = new Map(fixtures.map((fixture) => [fixture.name, fixture]))
   const state = new Map<string, 'visiting' | 'visited'>()
-  const ordered: PreparedFixture[] = []
-  const stack: PreparedFixture[] = []
+  const ordered: T[] = []
+  const stack: string[] = []
 
-  const visit = (fixture: PreparedFixture) => {
+  const visit = (fixture: T) => {
     if (state.get(fixture.name) === 'visited') return
     state.set(fixture.name, 'visiting')
-    stack.push(fixture)
-    for (const dependency of fixture.dependencies) {
+    stack.push(fixture.name)
+    for (const dependency of dependencies.get(fixture.name) ?? []) {
       if (state.get(dependency.name) === 'visiting') {
-        const start = stack.findIndex(({ name }) => name === dependency.name)
-        const cycle = [
-          ...stack.slice(start).map(({ name }) => name),
-          dependency.name,
-        ].join(' -> ')
+        const start = stack.indexOf(dependency.name)
+        const cycle = [...stack.slice(start), dependency.name].join(' -> ')
         throw createFixtureError(
           'FIXTURE_DEPENDENCY_CYCLE',
           `Fixture dependency cycle: ${cycle}`,
-          fixtureErrorContext(fixture, 'ordering fixtures', dependency.path),
+          fixtureErrorContext(fixture, stage, dependency.path),
         )
       }
       visit(byName.get(dependency.name)!)

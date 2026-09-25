@@ -56,6 +56,11 @@ test('zero-argument PrismaFixtures loads config with a supplied client', (t) => 
          }))
          await assert.rejects(fixtures.load(client), /Guarded fixture config requires the CLI/)
          assert.deepEqual(events, ['transaction'])
+         require('node:fs').writeFileSync('.prisma-fixtures', JSON.stringify({
+           fixtures: ['./users.yml', './users.yml'],
+         }))
+         await assert.rejects(fixtures.load(client), /Duplicate fixture name across paths/)
+         assert.deepEqual(events, ['transaction'])
        })().catch((error) => { console.error(error); process.exitCode = 1 })`,
     ],
     { cwd: dir, encoding: 'utf8' },
@@ -346,6 +351,8 @@ test('lint validates literal references, candidate sets and definite cycles', (t
   assert.equal(crossFile.status, 1)
   assert.match(crossFile.stderr, /FIXTURE_DEPENDENCY_CYCLE/)
   assert.match(crossFile.stderr, /user1 -> post1 -> user1/)
+  assert.match(crossFile.stderr, /during linting references/)
+  assert.match(crossFile.stderr, /"posts.yml" "post1" "\/author"/)
 })
 
 test('lint leaves dynamic and ambiguous references inert and reports partial coverage', (t) => {
@@ -997,6 +1004,27 @@ test('rejects missing or invalid explicit config before executing the client', (
     ['fixtures-type.json', JSON.stringify({ fixtures: 'users.yml' })],
     ['fixtures-blank.json', JSON.stringify({ fixtures: [' '] })],
     ['client.json', JSON.stringify({ client: ' ' })],
+    ['client-null.json', JSON.stringify({ client: null })],
+    [
+      'client-adapter.json',
+      JSON.stringify({ client: { module: './client.cjs', adapter: 'sqlite' } }),
+    ],
+    [
+      'client-module.json',
+      JSON.stringify({ client: { module: ' ', adapter: 'pg' } }),
+    ],
+    [
+      'client-guard.json',
+      JSON.stringify({
+        client: { module: './client.cjs', adapter: 'pg', guard: null },
+      }),
+    ],
+    [
+      'client-extra.json',
+      JSON.stringify({
+        client: { module: './client.cjs', adapter: 'pg', extra: true },
+      }),
+    ],
     ['timeout-zero.json', JSON.stringify({ timeout: 0 })],
     ['timeout-fraction.json', JSON.stringify({ timeout: 1.5 })],
     ['seed-negative.json', JSON.stringify({ seed: -1 })],

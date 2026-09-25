@@ -1,5 +1,7 @@
-import type { FixtureCleanupOptions } from './cleanup-options'
-import { normalizeCleanupOptions } from './cleanup-options'
+import {
+  type FixtureCleanupOptions,
+  normalizeCleanupOptions,
+} from './cleanup-options'
 import { isFixtureRecord } from './fixture-document'
 import { createFixtureError, type FixtureError } from './fixture-error'
 
@@ -51,11 +53,7 @@ export function normalizeResetOptions(value: unknown = {}): {
 
   return {
     load: normalizeLoadOptions({ seed: value.seed, refDate: value.refDate }),
-    cleanup: normalizeCleanupOptions(
-      value.preserveTables === undefined
-        ? {}
-        : { preserveTables: value.preserveTables },
-    ),
+    cleanup: normalizeCleanupOptions({ preserveTables: value.preserveTables }),
   }
 }
 

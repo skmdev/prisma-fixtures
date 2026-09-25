@@ -9,18 +9,14 @@ import {
   FixtureDocumentError,
   isFixtureRecord,
   MAX_FIXTURE_DEFINITIONS,
+  readFixturePaths,
 } from './fixture-document'
 import { type FixtureError, isTrustedFixtureError } from './fixture-error'
 import { lintFixtureReferences } from './fixture-reference'
 import { normalizeLoadOptions } from './load-options'
 import { loadPrismaDefaults } from './prisma-config'
-import { readFixtureConfig } from './fixture-config'
-import {
-  cleanFixtures,
-  loadFixtures,
-  readFixtureDefinitions,
-  resetFixtures,
-} from './index'
+import { type FixtureConfig, readFixtureConfig } from './fixture-config'
+import { cleanFixtures, loadFixtures, resetFixtures } from './index'
 
 const help = `Usage: prisma-fixtures [path...] [--client <module>] [options]
        prisma-fixtures init [fixtures-directory]
@@ -65,34 +61,15 @@ type FixtureGuard = {
   ) => Promise<T>
 }
 
+type CliOptions = ReturnType<typeof parseCliArguments>['values']
+
 let stage = 'arguments'
 let debug = false
-let lint = false
 
 async function main() {
-  const { values, positionals } = parseArgs({
-    allowPositionals: true,
-    options: {
-      config: { type: 'string' },
-      client: { type: 'string' },
-      databaseUrl: { type: 'string' },
-      require: { type: 'string', multiple: true },
-      timeout: { type: 'string' },
-      seed: { type: 'string' },
-      refDate: { type: 'string' },
-      clean: { type: 'boolean' },
-      reset: { type: 'boolean' },
-      list: { type: 'boolean' },
-      lint: { type: 'boolean' },
-      schema: { type: 'string' },
-      debug: { type: 'boolean', short: 'd' },
-      'no-color': { type: 'boolean' },
-      version: { type: 'boolean', short: 'v' },
-      help: { type: 'boolean', short: 'h' },
-    },
-  })
+  const { values, positionals } = parseCliArguments()
   debug = values.debug ?? false
-  lint = values.lint ?? false
+  const lint = values.lint ?? false
   if (values.help) return void process.stdout.write(help)
   if (values.version) {
     const { version } = require('../package.json') as { version: string }
@@ -103,35 +80,11 @@ async function main() {
       throw new Error('init accepts only an optional fixtures directory')
     }
     stage = 'initializing config'
-    if (fs.existsSync('.prisma-fixtures')) {
-      console.error('.prisma-fixtures already exists; no changes made.')
-      process.exitCode = 1
-      return
-    }
-    const fixtures =
-      positionals[1] ??
-      (fs.existsSync('prisma/fixtures') ? './prisma/fixtures' : './fixtures')
-    if (positionals[1]) {
-      if (!fs.existsSync(fixtures) || !fs.statSync(fixtures).isDirectory()) {
-        console.error('Fixture directory does not exist; no changes made.')
-        process.exitCode = 1
-        return
-      }
-    } else {
-      fs.mkdirSync(fixtures, { recursive: true })
-    }
-    fs.writeFileSync(
-      '.prisma-fixtures',
-      `${JSON.stringify({ fixtures: [fixtures] }, null, 2)}\n`,
-      { flag: 'wx' },
-    )
-    console.log(`Created .prisma-fixtures using ${fixtures}.`)
-    return
+    return initializeConfig(positionals[1])
   }
   stage = 'reading config'
   const config = readFixtureConfig(values.config)
   const targets = positionals.length ? positionals : (config.fixtures ?? [])
-  let clientConfig = values.client ? path.resolve(values.client) : config.client
   stage = 'arguments'
   if (
     (!values.clean && targets.length === 0) ||
@@ -154,36 +107,12 @@ async function main() {
     refDate: values.refDate ?? config.refDate,
   })
   const schemaFile = values.schema ?? config.schema
-  let validate: ReturnType<Ajv['compile']> | undefined
-  if (lint && schemaFile !== undefined) {
-    stage = 'reading schema'
-    const raw = fs.readFileSync(path.resolve(schemaFile), 'utf8')
-    try {
-      validate = new Ajv({ strict: false, validateFormats: false }).compile(
-        JSON.parse(raw),
-      )
-    } catch {
-      throw new FixtureDocumentError('Invalid fixture JSON Schema')
-    }
-  }
+  const validate =
+    lint && schemaFile !== undefined
+      ? readSchemaValidator(schemaFile)
+      : undefined
   stage = 'reading fixtures'
-  const definitions = values.clean
-    ? []
-    : targets.flatMap((target) =>
-        readFixtureDefinitions(path.resolve(target), (document, file) => {
-          if (validate && !validate(document)) {
-            const error = validate.errors?.[0]
-            throw new FixtureDocumentError(
-              `Fixture document ${JSON.stringify(path.basename(file))}: ${JSON.stringify(error?.instancePath || '/')} ${error?.message ?? 'does not match the schema'}`,
-            )
-          }
-        }),
-      )
-  if (
-    new Set(definitions.map(({ name }) => name)).size !== definitions.length
-  ) {
-    throw new FixtureDocumentError('Duplicate fixture name across paths')
-  }
+  const definitions = values.clean ? [] : readFixturePaths(targets, validate)
   if (lint) {
     if (definitions.length > MAX_FIXTURE_DEFINITIONS) {
       throw new FixtureDocumentError('Too many fixture definitions')
@@ -205,109 +134,7 @@ async function main() {
     return
   }
 
-  stage = 'loading the client'
-  const requireFromCwd = createRequire(path.resolve('package.json'))
-  for (const preload of values.require ?? []) requireFromCwd(preload)
-  let prismaDefaults: Awaited<ReturnType<typeof loadPrismaDefaults>> | undefined
-  if (!clientConfig) {
-    stage = 'loading Prisma config'
-    prismaDefaults = await loadPrismaDefaults(
-      path.dirname(path.resolve(values.config ?? '.prisma-fixtures')),
-      requireFromCwd,
-      values.databaseUrl,
-    )
-    const clientExtension = path.extname(prismaDefaults.module)
-    if (
-      (clientExtension === '.ts' || clientExtension === '.cts') &&
-      !require.extensions[clientExtension]
-    ) {
-      requireFromCwd('ts-node/register')
-    }
-    clientConfig = { module: prismaDefaults.module, adapter: 'pg' }
-    stage = 'loading the client'
-  }
-  const preserveTables = [
-    ...new Set([
-      ...(config.preserveTables ?? []),
-      ...(prismaDefaults?.preserveTables ?? []),
-    ]),
-  ]
-  let candidate: unknown
-  let guard: FixtureGuard | undefined
-  if (typeof clientConfig === 'string') {
-    const imported: { default?: unknown } = await import(
-      pathToFileURL(clientConfig).href
-    )
-    let exported = imported.default
-    if (exported && typeof exported === 'object' && 'default' in exported) {
-      exported = exported.default
-    }
-    if (values.databaseUrl !== undefined && typeof exported !== 'function') {
-      throw new Error('--databaseUrl requires a client factory')
-    }
-    candidate =
-      typeof exported === 'function'
-        ? await exported({ databaseUrl: values.databaseUrl })
-        : exported
-  } else {
-    if (clientConfig?.guard) {
-      const imported: unknown = requireFromCwd(clientConfig.guard)
-      if (
-        !isFixtureRecord(imported) ||
-        typeof imported.fixtureDatabaseUrl !== 'function' ||
-        typeof imported.fixtureTransaction !== 'function'
-      ) {
-        throw new Error('Invalid fixture guard module')
-      }
-      guard = imported as FixtureGuard
-    }
-    const environment = {
-      ...process.env,
-      ...(values.databaseUrl === undefined
-        ? {}
-        : { DATABASE_URL: values.databaseUrl }),
-    }
-    const databaseUrl = guard
-      ? guard.fixtureDatabaseUrl(environment)
-      : (values.databaseUrl ??
-        prismaDefaults?.databaseUrl ??
-        environment.DATABASE_URL)
-    if (typeof databaseUrl !== 'string' || !databaseUrl.trim()) {
-      throw new Error('DATABASE_URL is required')
-    }
-    const generated: unknown = await importGeneratedClient(
-      clientConfig!.module,
-      requireFromCwd,
-    )
-    const exports = isFixtureRecord(generated) ? generated : undefined
-    const nested = isFixtureRecord(exports?.default)
-      ? exports.default
-      : undefined
-    const constructor = exports?.PrismaClient ?? nested?.PrismaClient
-    const adapter = requireFromCwd('@prisma/adapter-pg') as {
-      PrismaPg?: new (options: { connectionString: string }) => unknown
-    }
-    if (
-      typeof constructor !== 'function' ||
-      typeof adapter.PrismaPg !== 'function'
-    ) {
-      throw new Error('Invalid generated Prisma client or pg adapter')
-    }
-    candidate = new (constructor as new (options: {
-      adapter: unknown
-    }) => unknown)({
-      adapter: new adapter.PrismaPg({ connectionString: databaseUrl }),
-    })
-  }
-  if (
-    !candidate ||
-    typeof candidate !== 'object' ||
-    !('$disconnect' in candidate) ||
-    typeof candidate.$disconnect !== 'function'
-  ) {
-    throw new Error('The client must implement $disconnect')
-  }
-  const client = candidate as CliClient
+  const { client, guard, preserveTables } = await loadClient(config, values)
   let count: number
   let operationError: unknown
   try {
@@ -353,6 +180,190 @@ async function main() {
       ? 'Cleaned database data.'
       : `${values.reset ? 'Reset and loaded' : 'Loaded'} ${count} fixtures.`,
   )
+}
+
+function parseCliArguments() {
+  return parseArgs({
+    allowPositionals: true,
+    options: {
+      config: { type: 'string' },
+      client: { type: 'string' },
+      databaseUrl: { type: 'string' },
+      require: { type: 'string', multiple: true },
+      timeout: { type: 'string' },
+      seed: { type: 'string' },
+      refDate: { type: 'string' },
+      clean: { type: 'boolean' },
+      reset: { type: 'boolean' },
+      list: { type: 'boolean' },
+      lint: { type: 'boolean' },
+      schema: { type: 'string' },
+      debug: { type: 'boolean', short: 'd' },
+      'no-color': { type: 'boolean' },
+      version: { type: 'boolean', short: 'v' },
+      help: { type: 'boolean', short: 'h' },
+    },
+  })
+}
+
+function initializeConfig(directory?: string) {
+  if (fs.existsSync('.prisma-fixtures')) {
+    console.error('.prisma-fixtures already exists; no changes made.')
+    process.exitCode = 1
+    return
+  }
+  const fixtures =
+    directory ??
+    (fs.existsSync('prisma/fixtures') ? './prisma/fixtures' : './fixtures')
+  if (directory) {
+    if (!fs.existsSync(fixtures) || !fs.statSync(fixtures).isDirectory()) {
+      console.error('Fixture directory does not exist; no changes made.')
+      process.exitCode = 1
+      return
+    }
+  } else {
+    fs.mkdirSync(fixtures, { recursive: true })
+  }
+  fs.writeFileSync(
+    '.prisma-fixtures',
+    `${JSON.stringify({ fixtures: [fixtures] }, null, 2)}\n`,
+    { flag: 'wx' },
+  )
+  console.log(`Created .prisma-fixtures using ${fixtures}.`)
+}
+
+function readSchemaValidator(schemaFile: string) {
+  stage = 'reading schema'
+  const raw = fs.readFileSync(path.resolve(schemaFile), 'utf8')
+  let validate: ReturnType<Ajv['compile']>
+  try {
+    validate = new Ajv({ strict: false, validateFormats: false }).compile(
+      JSON.parse(raw),
+    )
+  } catch {
+    throw new FixtureDocumentError('Invalid fixture JSON Schema')
+  }
+  return (document: unknown, file: string) => {
+    if (validate(document)) return
+    const error = validate.errors?.[0]
+    throw new FixtureDocumentError(
+      `Fixture document ${JSON.stringify(path.basename(file))}: ${JSON.stringify(error?.instancePath || '/')} ${error?.message ?? 'does not match the schema'}`,
+    )
+  }
+}
+
+async function loadClient(config: FixtureConfig, values: CliOptions) {
+  stage = 'loading the client'
+  let clientConfig = values.client ? path.resolve(values.client) : config.client
+  const requireFromCwd = createRequire(path.resolve('package.json'))
+  for (const preload of values.require ?? []) requireFromCwd(preload)
+  let prismaDefaults: Awaited<ReturnType<typeof loadPrismaDefaults>> | undefined
+  if (!clientConfig) {
+    stage = 'loading Prisma config'
+    prismaDefaults = await loadPrismaDefaults(
+      path.dirname(path.resolve(values.config ?? '.prisma-fixtures')),
+      requireFromCwd,
+      values.databaseUrl,
+    )
+    const clientExtension = path.extname(prismaDefaults.module)
+    if (
+      (clientExtension === '.ts' || clientExtension === '.cts') &&
+      !require.extensions[clientExtension]
+    ) {
+      requireFromCwd('ts-node/register')
+    }
+    clientConfig = { module: prismaDefaults.module, adapter: 'pg' }
+    stage = 'loading the client'
+  }
+  const preserveTables = [
+    ...new Set([
+      ...(config.preserveTables ?? []),
+      ...(prismaDefaults?.preserveTables ?? []),
+    ]),
+  ]
+  let candidate: unknown
+  let guard: FixtureGuard | undefined
+  if (typeof clientConfig === 'string') {
+    const imported: { default?: unknown } = await import(
+      pathToFileURL(clientConfig).href
+    )
+    let exported = imported.default
+    if (exported && typeof exported === 'object' && 'default' in exported) {
+      exported = exported.default
+    }
+    if (values.databaseUrl !== undefined && typeof exported !== 'function') {
+      throw new Error('--databaseUrl requires a client factory')
+    }
+    candidate =
+      typeof exported === 'function'
+        ? await exported({ databaseUrl: values.databaseUrl })
+        : exported
+  } else {
+    if (clientConfig.guard) {
+      const imported: unknown = requireFromCwd(clientConfig.guard)
+      if (
+        !isFixtureRecord(imported) ||
+        typeof imported.fixtureDatabaseUrl !== 'function' ||
+        typeof imported.fixtureTransaction !== 'function'
+      ) {
+        throw new Error('Invalid fixture guard module')
+      }
+      guard = imported as FixtureGuard
+    }
+    const environment = {
+      ...process.env,
+      ...(values.databaseUrl === undefined
+        ? {}
+        : { DATABASE_URL: values.databaseUrl }),
+    }
+    const databaseUrl = guard
+      ? guard.fixtureDatabaseUrl(environment)
+      : (values.databaseUrl ??
+        prismaDefaults?.databaseUrl ??
+        environment.DATABASE_URL)
+    if (typeof databaseUrl !== 'string' || !databaseUrl.trim()) {
+      throw new Error('DATABASE_URL is required')
+    }
+    const generated = await importGeneratedClient(
+      clientConfig.module,
+      requireFromCwd,
+    )
+    candidate = createGeneratedClient(generated, requireFromCwd, databaseUrl)
+  }
+  if (
+    !candidate ||
+    typeof candidate !== 'object' ||
+    !('$disconnect' in candidate) ||
+    typeof candidate.$disconnect !== 'function'
+  ) {
+    throw new Error('The client must implement $disconnect')
+  }
+  return { client: candidate as CliClient, guard, preserveTables }
+}
+
+function createGeneratedClient(
+  generated: unknown,
+  requireFromCwd: NodeRequire,
+  databaseUrl: string,
+): unknown {
+  const clientExports = isFixtureRecord(generated) ? generated : undefined
+  const defaultExport = isFixtureRecord(clientExports?.default)
+    ? clientExports.default
+    : undefined
+  const PrismaClient =
+    clientExports?.PrismaClient ?? defaultExport?.PrismaClient
+  const adapter = requireFromCwd('@prisma/adapter-pg') as {
+    PrismaPg?: new (options: { connectionString: string }) => unknown
+  }
+  if (
+    typeof PrismaClient !== 'function' ||
+    typeof adapter.PrismaPg !== 'function'
+  ) {
+    throw new Error('Invalid generated Prisma client or pg adapter')
+  }
+  return new (PrismaClient as new (options: { adapter: unknown }) => unknown)({
+    adapter: new adapter.PrismaPg({ connectionString: databaseUrl }),
+  })
 }
 
 async function importGeneratedClient(

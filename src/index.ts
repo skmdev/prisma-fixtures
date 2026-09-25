@@ -1,12 +1,12 @@
 import {
   assertFixtureDefinition,
-  FixtureDocumentError,
   type FixtureDefinition,
   fixtureErrorContext,
   inheritFixtureSource,
   isFixtureRecord,
   MAX_FIXTURE_DEFINITIONS,
   readFixtureDocuments,
+  readFixturePaths,
 } from './fixture-document'
 import {
   applyFixtureConnections,
@@ -54,14 +54,7 @@ export class PrismaFixtures {
     if (typeof config.client === 'object' && config.client.guard) {
       throw new Error('Guarded fixture config requires the CLI')
     }
-    const definitions = config.fixtures.flatMap((target) =>
-      readFixtureDefinitions(target),
-    )
-    if (
-      new Set(definitions.map(({ name }) => name)).size !== definitions.length
-    ) {
-      throw new FixtureDocumentError('Duplicate fixture name across paths')
-    }
+    const definitions = readFixturePaths(config.fixtures)
     const transaction = (client as { $transaction?: unknown })?.$transaction
     if (typeof transaction !== 'function') {
       throw new Error('The client must implement $transaction')
@@ -268,7 +261,7 @@ async function writeFixtures(
   write: FixtureWriter | undefined,
 ) {
   const records: Record<string, Record<string, unknown>> = Object.create(null)
-  const pending: {
+  const deferredUpdates: {
     fixture: FixtureDefinition
     delegate: CreateDelegate
     id: unknown
@@ -318,7 +311,7 @@ async function writeFixtures(
           fixtureErrorContext(fixture, 'writing fixture'),
         )
       }
-      pending.push({
+      deferredUpdates.push({
         fixture,
         delegate: delegate!,
         id: saved.id,
@@ -327,7 +320,7 @@ async function writeFixtures(
     }
   }
 
-  for (const { fixture, delegate, id, data } of pending) {
+  for (const { fixture, delegate, id, data } of deferredUpdates) {
     try {
       const saved = await delegate.update!({ where: { id }, data })
       if (!isFixtureRecord(saved)) throw new Error('Invalid updated record')
@@ -372,26 +365,9 @@ async function prepareFixtures(
     names.add(definition.name)
   }
 
-  const clientRecord = client as Record<string, unknown>
-  const runtime = new Map<
-    string,
-    { delegate?: CreateDelegate; processor?: ProcessorConstructor }
-  >()
+  const runtime = new Map<string, Omit<RuntimeFixture, 'fixture'>>()
   for (const fixture of definitions) {
-    let delegate: CreateDelegate | undefined
-    if (!write) {
-      const candidate =
-        clientRecord[fixture.entity] ??
-        clientRecord[uncapitalize(fixture.entity)]
-      if (
-        candidate === null ||
-        (typeof candidate !== 'object' && typeof candidate !== 'function') ||
-        typeof (candidate as { create?: unknown }).create !== 'function'
-      ) {
-        throw new Error(`Fixture model delegate not found: ${fixture.entity}`)
-      }
-      delegate = candidate as CreateDelegate
-    }
+    const delegate = write ? undefined : resolveDelegate(client, fixture.entity)
     if (fixture.deferredFields?.length && (write || !delegate?.update)) {
       throw new Error('Deferred fields require a client update delegate')
     }
@@ -431,6 +407,16 @@ async function prepareFixtures(
   }))
 }
 
-function uncapitalize(value: string) {
-  return value[0]!.toLowerCase() + value.slice(1)
+function resolveDelegate(client: object, entity: string): CreateDelegate {
+  const clientRecord = client as Record<string, unknown>
+  const delegateName = entity[0]!.toLowerCase() + entity.slice(1)
+  const candidate = clientRecord[entity] ?? clientRecord[delegateName]
+  if (
+    candidate === null ||
+    (typeof candidate !== 'object' && typeof candidate !== 'function') ||
+    typeof (candidate as { create?: unknown }).create !== 'function'
+  ) {
+    throw new Error(`Fixture model delegate not found: ${entity}`)
+  }
+  return candidate as CreateDelegate
 }

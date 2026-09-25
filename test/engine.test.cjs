@@ -15,10 +15,10 @@ const {
 async function rejected(promise) {
   try {
     await promise
-    assert.fail('Expected operation to reject')
   } catch (error) {
     return error
   }
+  assert.fail('Expected operation to reject')
 }
 
 test('reads flat YAML and creates fixtures after resolving a scalar reference', async (t) => {
@@ -93,6 +93,51 @@ test('defers cyclic scalar links until after all fixture creates', async (t) => 
   ])
   assert.equal(records.first.parentId, 'second')
   assert.equal(records.second.parentId, 'first')
+})
+
+test('validates field metadata consistently for documents and direct definitions', async (t) => {
+  const directory = fixtureDirectory(t)
+  const account = createDelegate([], 'account', (data) => data)
+  const definition = {
+    name: 'account1',
+    entity: 'account',
+    parameters: {},
+    data: { parentId: 1 },
+  }
+  for (const metadata of [
+    { parameters: null },
+    { connectedFields: null },
+    { connectedFields: ['parentId', 'parentId'] },
+    { connectedFields: ['constructor'] },
+    { connectedFields: ['invalid-field'] },
+    { deferredFields: null },
+    { deferredFields: [] },
+    { deferredFields: ['parentId', 'parentId'] },
+    { deferredFields: ['constructor'] },
+    { deferredFields: ['missing'] },
+    { deferredFields: ['id'] },
+    { connectedFields: ['parentId'], deferredFields: ['parentId'] },
+  ]) {
+    write(
+      directory,
+      'metadata.json',
+      JSON.stringify({
+        entity: 'account',
+        items: { account1: definition.data },
+        ...metadata,
+      }),
+    )
+    assert.throws(() => readFixtureDefinitions(directory), /fixture/i)
+    await assert.rejects(
+      loadFixtures({ account }, [{ ...definition, ...metadata }]),
+      /fixture/i,
+    )
+  }
+  assert.equal(account.calls.length, 0)
+  const records = await loadFixtures({ account }, [
+    { ...definition, connectedFields: [] },
+  ])
+  assert.deepEqual(records.account1, { parentId: 1 })
 })
 
 test('reads sorted YAML and JSON, expands ranges independently and stays inert', (t) => {

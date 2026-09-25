@@ -73,13 +73,6 @@ export function buildFixtureSchema(dmmf: Dmmf): FixtureSchema {
     rootRelations.set(`${model.name}UncheckedCreateInput`, fields)
   }
 
-  const inputDefinitionName = ({ input, namespace }: InputInfo) =>
-    `PrismaInput_${namespace}_${input.name}`
-  const enumDefinitionName = ({ enumType, namespace }: EnumInfo) =>
-    `PrismaEnum_${namespace}_${enumType.name}`
-  const internalRef = (name: string): JsonSchema => ({
-    $ref: `#/definitions/${pointer(name)}`,
-  })
   const connectionRecord = (): JsonSchema => {
     const name = 'PrismaFixtureConnectionRecord'
     if (!(name in definitions)) {
@@ -105,32 +98,6 @@ export function buildFixtureSchema(dmmf: Dmmf): FixtureSchema {
     (reference.namespace
       ? enums.get(`${reference.namespace}:${reference.type}`)
       : undefined) ?? enumsByName.get(reference.type)
-
-  const scalarSchema = (type: string): JsonSchema => {
-    if (type === 'Int') return { type: 'integer' }
-    if (type === 'Float') return { type: 'number' }
-    if (type === 'Decimal') {
-      return {
-        anyOf: [{ type: 'number' }, { type: 'string' }],
-      }
-    }
-    if (type === 'String' || type === 'DateTime') return { type: 'string' }
-    if (type === 'Boolean') return { type: 'boolean' }
-    if (type === 'BigInt') {
-      return {
-        anyOf: [{ type: 'integer' }, { type: 'string', pattern: '^-?[0-9]+$' }],
-      }
-    }
-    if (type === 'Json') return internalRef('jsonValue')
-    if (type === 'Null') return { type: 'null' }
-    if (type === 'Bytes') {
-      return {
-        description:
-          'Bytes constructors are validated by Prisma at runtime; fixture structure remains permissive.',
-      }
-    }
-    return internalRef('jsonValue')
-  }
 
   const ensureEnum = (info: EnumInfo) => {
     const name = enumDefinitionName(info)
@@ -271,4 +238,37 @@ export function buildFixtureSchema(dmmf: Dmmf): FixtureSchema {
   schema.allOf = [...(schema.allOf ?? []), ...modelConditions]
 
   return schema
+}
+
+const inputDefinitionName = ({ input, namespace }: InputInfo) =>
+  `PrismaInput_${namespace}_${input.name}`
+const enumDefinitionName = ({ enumType, namespace }: EnumInfo) =>
+  `PrismaEnum_${namespace}_${enumType.name}`
+const internalRef = (name: string): JsonSchema => ({
+  $ref: `#/definitions/${pointer(name)}`,
+})
+const scalarSchema = (type: string): JsonSchema => {
+  if (type === 'Int') return { type: 'integer' }
+  if (type === 'Float') return { type: 'number' }
+  if (type === 'Decimal') {
+    return {
+      anyOf: [{ type: 'number' }, { type: 'string' }],
+    }
+  }
+  if (type === 'String' || type === 'DateTime') return { type: 'string' }
+  if (type === 'Boolean') return { type: 'boolean' }
+  if (type === 'BigInt') {
+    return {
+      anyOf: [{ type: 'integer' }, { type: 'string', pattern: '^-?[0-9]+$' }],
+    }
+  }
+  if (type === 'Json') return internalRef('jsonValue')
+  if (type === 'Null') return { type: 'null' }
+  if (type === 'Bytes') {
+    return {
+      description:
+        'Bytes constructors are validated by Prisma at runtime; fixture structure remains permissive.',
+    }
+  }
+  return internalRef('jsonValue')
 }

@@ -1,7 +1,10 @@
 import fs from 'node:fs'
 import path from 'node:path'
 
-import { normalizeCleanupOptions } from './cleanup-options'
+import {
+  type FixtureCleanupOptions,
+  normalizeCleanupOptions,
+} from './cleanup-options'
 import { isFixtureRecord } from './fixture-document'
 import { type FixtureLoadOptions, normalizeLoadOptions } from './load-options'
 
@@ -11,7 +14,7 @@ export type ConfiguredPrismaClient = {
   guard?: string
 }
 
-export type FixtureConfig = ReturnType<typeof normalizeCleanupOptions> &
+export type FixtureConfig = FixtureCleanupOptions &
   FixtureLoadOptions & {
     fixtures?: string[]
     client?: string | ConfiguredPrismaClient
@@ -55,22 +58,12 @@ export function readFixtureConfig(file?: string): FixtureConfig {
   }
   const { fixtures, client, timeout, schema, preserveTables, seed, refDate } =
     config
-  const isPath = (value: unknown): value is string =>
-    typeof value === 'string' && value.trim().length > 0
   if (
     (fixtures !== undefined &&
       (!Array.isArray(fixtures) ||
         !fixtures.length ||
         !fixtures.every(isPath))) ||
-    (client !== undefined &&
-      !isPath(client) &&
-      (!isFixtureRecord(client) ||
-        Object.keys(client).some(
-          (key) => !['module', 'adapter', 'guard'].includes(key),
-        ) ||
-        !isPath(client.module) ||
-        client.adapter !== 'pg' ||
-        (client.guard !== undefined && !isPath(client.guard)))) ||
+    (client !== undefined && !isClientConfig(client)) ||
     (schema !== undefined && !isPath(schema)) ||
     (timeout !== undefined &&
       (typeof timeout !== 'number' ||
@@ -79,7 +72,7 @@ export function readFixtureConfig(file?: string): FixtureConfig {
   ) {
     throw new Error('Invalid fixture CLI config')
   }
-  let cleanup: ReturnType<typeof normalizeCleanupOptions>
+  let cleanup: FixtureCleanupOptions
   let load: FixtureLoadOptions
   try {
     cleanup = normalizeCleanupOptions({ preserveTables })
@@ -90,12 +83,31 @@ export function readFixtureConfig(file?: string): FixtureConfig {
   const directory = path.dirname(configFile)
   return {
     fixtures: fixtures?.map((target) => path.resolve(directory, target)),
-    client: resolveClientPaths(client as FixtureConfig['client'], directory),
+    client: resolveClientPaths(client, directory),
     timeout,
     schema: schema === undefined ? undefined : path.resolve(directory, schema),
     ...cleanup,
     ...load,
   }
+}
+
+function isPath(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0
+}
+
+function isClientConfig(
+  value: unknown,
+): value is string | ConfiguredPrismaClient {
+  return (
+    isPath(value) ||
+    (isFixtureRecord(value) &&
+      Object.keys(value).every((key) =>
+        ['module', 'adapter', 'guard'].includes(key),
+      ) &&
+      isPath(value.module) &&
+      value.adapter === 'pg' &&
+      (value.guard === undefined || isPath(value.guard)))
+  )
 }
 
 function resolveClientPaths(
