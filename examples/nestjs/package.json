@@ -1,0 +1,34 @@
+{
+  "name": "prisma-fixtures-nestjs-example",
+  "private": true,
+  "type": "commonjs",
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "scripts": {
+    "dev": "npm run build && node compiled/src/main.js",
+    "build": "tsc -p tsconfig.json",
+    "start": "node compiled/src/main.js",
+    "db:generate": "prisma generate",
+    "db:push": "prisma db push",
+    "db:seed": "prisma db seed",
+    "db:reset": "prisma db seed -- --reset",
+    "lint:fixtures": "prisma generate --generator fixtures && prisma-fixtures ./prisma/fixtures --lint --schema src/generated/prisma-fixtures/schema.json"
+  },
+  "dependencies": {
+    "@prisma/adapter-pg": "7.10.0",
+    "@prisma/client": "7.10.0",
+    "@nestjs/common": "12.1.0",
+    "@nestjs/core": "12.1.0",
+    "@nestjs/platform-express": "12.1.0",
+    "reflect-metadata": "0.2.2",
+    "rxjs": "7.8.2"
+  },
+  "devDependencies": {
+    "@skmdev/prisma-fixtures": "0.1.0",
+    "argon2": "0.45.1",
+    "prisma": "7.10.0",
+    "@types/node": "22.19.15",
+    "typescript": "5.9.3"
+  }
+}

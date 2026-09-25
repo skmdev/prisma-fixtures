@@ -1,0 +1,8 @@
+# yaml-language-server: $schema=../../src/generated/prisma-fixtures/schema.json
+entity: User
+processor: ./processors/user-processor.mjs
+items:
+  user{1..3}:
+    email: 'user($current)@example.test'
+    name: '{{person.firstName}} {{person.lastName}}'
+    password: fixture-password

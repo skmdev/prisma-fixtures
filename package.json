@@ -48,10 +48,12 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "prettier --check .",
+    "lint:fixtures": "npm run build && npm exec --yes --package=. -- node test/lint-examples.cjs",
     "format": "prettier --write .",
     "test": "npm run build && node --test test/*.test.cjs",
     "test:integration": "node test/integration.cjs",
-    "verify": "npm run lint && npm run typecheck && npm test",
+    "test:examples": "node test/integration.cjs --examples",
+    "verify": "npm run lint && npm run typecheck && npm test && npm run lint:fixtures",
     "prepack": "npm run build"
   },
   "dependencies": {

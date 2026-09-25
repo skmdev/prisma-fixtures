@@ -1,0 +1,16 @@
+generator client {
+  provider               = "prisma-client"
+  output                 = "../../src/generated/prisma"
+  moduleFormat           = "esm"
+  generatedFileExtension = "ts"
+  importFileExtension    = "ts"
+}
+
+generator fixtures {
+  provider = "prisma-fixtures-generator"
+  output   = "../../src/generated/prisma-fixtures"
+}
+
+datasource db {
+  provider = "postgresql"
+}

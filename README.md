@@ -59,6 +59,11 @@ Programmatic use with your own client is covered under
 [API and persistence](#api-and-persistence). CommonJS is supported with
 `require('@skmdev/prisma-fixtures')`.
 
+See the [framework and runtime examples](examples/README.md) for Next.js, Hono,
+TanStack Start, NestJS, Astro, Nuxt, SvelteKit, Bun, Elysia and Deno. Each loads
+users and related posts, hashes user passwords with an Argon2 processor, and
+serves the seeded records through an API. NestJS demonstrates a CommonJS client.
+
 ## Fixture format
 
 Each `.yml`, `.yaml` or `.json` file describes one entity. `User` and `user` both
@@ -199,6 +204,9 @@ import { PrismaFixtures } from '@skmdev/prisma-fixtures'
 const fixtures = new PrismaFixtures()
 const records = await fixtures.load(prisma)
 ```
+
+See the [runnable programmatic example](examples/hono/prisma/seed.mjs) and its
+[setup instructions](examples/hono/README.md).
 
 `load()` reads `.prisma-fixtures` from the current directory, applies its `seed`,
 `refDate` and `timeout` settings, and loads in one transaction. The caller keeps
@@ -496,7 +504,8 @@ Point your editor at `node_modules/@skmdev/prisma-fixtures/schema/fixture.schema
 to use it without generation.
 
 The editor schema cannot check cross-file names, the literal dependency graph or
-runtime behavior; run `--lint` in CI as well.
+runtime behavior; run `--lint` in CI as well. This repository's `npm run verify`
+includes `npm run lint:fixtures` for the example fixtures.
 
 ## Trust and limits
 
@@ -526,8 +535,11 @@ npm pack --dry-run
 ```
 
 The integration check installs the actual tarball into a clean temporary project,
-generates a Prisma 7 client, checks relations and rollback against PostgreSQL, and
-exercises CommonJS, ESM, TypeScript and the installed CLI. CI runs on Node 22 and 24.
+generates Prisma 7 clients, checks relations and rollback against PostgreSQL, and
+exercises CommonJS, ESM, TypeScript, the installed CLI, and the NestJS/Hono examples
+including Argon2 password verification and HTTP responses. CI runs on Node 22 and 24.
+Run `npm run test:examples` with Bun and Deno also on `PATH` to install, build,
+seed and check all ten framework/runtime examples in temporary directories.
 Development-only overrides update Prisma CLI's transitive `deepmerge-ts` and
 `mysql2` to patched releases. The real Prisma generation/database check validates
 the configuration path; remove the overrides when Prisma adopts patched versions.

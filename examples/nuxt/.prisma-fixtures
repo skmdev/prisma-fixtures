@@ -1,0 +1,9 @@
+{
+  "fixtures": [
+    "./prisma/fixtures"
+  ],
+  "client": {
+    "module": "./src/generated/prisma/client.ts",
+    "adapter": "pg"
+  }
+}

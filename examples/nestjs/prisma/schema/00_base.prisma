@@ -1,0 +1,14 @@
+generator client {
+  provider     = "prisma-client"
+  output       = "../../src/generated/prisma"
+  moduleFormat = "cjs"
+}
+
+generator fixtures {
+  provider = "prisma-fixtures-generator"
+  output   = "../../src/generated/prisma-fixtures"
+}
+
+datasource db {
+  provider = "postgresql"
+}

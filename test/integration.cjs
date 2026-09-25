@@ -446,6 +446,31 @@ items:
     console.log(
       'PASS installed CLI database clean/reset and failed-reset rollback',
     )
+
+    await require('./framework-examples.cjs')({
+      root,
+      dir,
+      run,
+      container,
+      port,
+      tarball: path.join(dir, packed.filename),
+      names: process.argv.includes('--examples')
+        ? process.argv.length > 3
+          ? process.argv.slice(3)
+          : [
+              'nextjs',
+              'hono',
+              'tanstack-start',
+              'nestjs',
+              'astro',
+              'nuxt',
+              'sveltekit',
+              'bun',
+              'elysia',
+              'deno',
+            ]
+        : ['nestjs', 'hono'],
+    })
   } finally {
     if (started) run('docker', ['stop', container])
     fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 })
