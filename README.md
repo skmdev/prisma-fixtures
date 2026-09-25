@@ -4,15 +4,74 @@ Load YAML or JSON fixtures into Prisma using named references, generated data an
 processors. The CLI can initialize a generated Prisma 7 client from your Prisma
 config; the API also accepts a client you create.
 
-```sh
-npm install --save-dev @skmdev/prisma-fixtures
-```
-
 Requires Node.js 22.18+; tested with Prisma 7.10 and PostgreSQL. Prisma itself is
 provided by your application, not installed as a runtime dependency of this package.
 
+- [Quick start](#quick-start)
+- [Fixture format](#fixture-format)
+- [Processors](#processors)
+- [API and persistence](#api-and-persistence)
+- [CLI](#cli)
+- [Fixture linting and editor support](#fixture-linting-and-editor-support)
+- [Trust and limits](#trust-and-limits)
+- [Compatibility and attribution](#compatibility-and-attribution)
+- [Contributing and releases](CONTRIBUTING.md)
+
 ## Quick start
 
+Start with an existing Prisma 7 application that has:
+
+- `prisma`, `@prisma/client` and `@prisma/adapter-pg` installed.
+- A `prisma.config.ts`, a `prisma-client` generator and a PostgreSQL database
+  configured through `DATABASE_URL`. See [client discovery](#client-discovery-and-overrides)
+  for TypeScript and CommonJS runtime setup.
+- `User` and `Post` models compatible with the following fields, with their
+  tables already created by your application's migrations. Fixtures insert data;
+  they do not create tables.
+
+<details>
+<summary>Minimal User and Post models</summary>
+
+```prisma
+model User {
+  id    Int    @id @default(autoincrement())
+  email String @unique
+  name  String
+  posts Post[]
+}
+
+model Post {
+  id       Int    @id @default(autoincrement())
+  title    String
+  authorId Int
+  author   User   @relation(fields: [authorId], references: [id])
+}
+```
+
+</details>
+
+### 1. Install and initialize
+
+Run beside your `prisma.config.ts`:
+
+```sh
+npm install --save-dev @skmdev/prisma-fixtures
+npx prisma-fixtures init
+```
+
+This creates `.prisma-fixtures` and a fixtures directory. It uses `prisma/fixtures`
+if that directory already exists; otherwise it creates `fixtures`. The examples
+below assume the latter, with this generated config:
+
+```json
+{
+  "fixtures": ["./fixtures"]
+}
+```
+
+### 2. Add fixtures
+
+Use the directory recorded in `.prisma-fixtures` for both files.
 Create `fixtures/users.yml`:
 
 ```yaml
@@ -20,7 +79,7 @@ entity: User
 items:
   user{1..3}:
     email: 'user($current)@example.test'
-    name: '{{name.firstName}} {{name.lastName}}'
+    name: '{{person.firstName}} {{person.lastName}}'
 ```
 
 Create `fixtures/posts.yml`:
@@ -34,35 +93,39 @@ items:
     author: '@user($current)'
 ```
 
-With `prisma.config.ts` and a generated `prisma-client` in your project, run
-`npx prisma-fixtures init` beside the Prisma config. It creates `.prisma-fixtures`
-and a fixtures directory; add your YAML files there. The generated config is:
+### 3. Configure and run the seed
 
-```json
-{
-  "fixtures": ["./fixtures"]
-}
+Add `seed` to `migrations` in your existing `prisma.config.ts`, keeping your other
+settings:
+
+```ts
+export default defineConfig({
+  // Keep your existing schema, datasource and other settings.
+  migrations: { seed: 'prisma-fixtures' },
+})
 ```
 
-Add `migrations: { seed: 'prisma-fixtures' }` to your `prisma.config.ts`.
-Set `DATABASE_URL`, then generate the client and load the fixtures:
+With `DATABASE_URL` available, generate the client, check the fixtures and seed:
 
 ```sh
 npx prisma generate
+npx prisma-fixtures --lint
 npx prisma db seed
 ```
 
-The CLI reads the Prisma config and loads both files in one transaction; no client
-wrapper is needed. To clear and reload the database, run
-`npx prisma db seed -- --reset`; this forwards `--reset` to the fixture CLI.
-Programmatic use with your own client is covered under
-[API and persistence](#api-and-persistence). CommonJS is supported with
-`require('@skmdev/prisma-fixtures')`.
+The CLI prints `Loaded 6 fixtures.`: three users, each with one related post,
+committed in one transaction. It reads your Prisma config; no client wrapper is
+needed. For loading from application code, see [API and persistence](#api-and-persistence).
 
-See the [framework and runtime examples](examples/README.md) for Next.js, Hono,
-TanStack Start, NestJS, Astro, Nuxt, SvelteKit, Bun, Elysia and Deno. Each loads
-users and related posts, hashes user passwords with an Argon2 processor, and
-serves the seeded records through an API. NestJS demonstrates a CommonJS client.
+Ordinary loading only inserts; it does not upsert or delete. Running this example
+again fails on the unique emails. To clear and reload, use
+`npx prisma db seed -- --reset`. **Reset clears data from all ordinary/partitioned
+tables in non-system schemas, including tables absent from your fixtures.**
+Migration history and tables preserved by `preserveTables` or Prisma's
+`tables.external` remain; see [cleanup and reset](#cleanup-and-reset).
+
+See the [framework and runtime examples](examples/README.md) for standalone apps
+with Argon2 password processors and API endpoints. NestJS demonstrates a CommonJS client.
 
 ## Fixture format
 
@@ -84,6 +147,8 @@ determine insert order. Fixture names must be unique across all files.
 | Faker                    | `'{{internet.email}}'`           | Generated value; a standalone provider preserves its type     |
 | EJS                      | `"<%= ['a', 'b'].join(', ') %>"` | JavaScript template rendered to text                          |
 
+### References and relations
+
 Quote references and template expressions in YAML. Arrays and nested objects are
 supported. Random choices are selected once before dependency ordering. Missing
 references and cycles fail before any insert. An absent scalar field can only be
@@ -103,14 +168,15 @@ items:
         email: '@user1.email'
 ```
 
+### Deferred fields
+
 For a nullable scalar link that cannot exist until another fixture is created,
 declare `deferredFields`. The loader omits those fields on create, then updates
-the saved rows after all creates in the same transaction:
-
-Include an `@updatedAt` field in `deferredFields` when that update must retain a
-specific fixture timestamp.
+the saved rows after all creates. For example, a candidate's optional primary
+resume points to a resume that requires the candidate to exist first:
 
 ```yaml
+# fixtures/candidates.yml
 entity: Candidate
 deferredFields: [primaryResumeId]
 items:
@@ -119,8 +185,27 @@ items:
     primaryResumeId: rsu_local_1
 ```
 
+```yaml
+# fixtures/resumes.yml
+entity: Resume
+items:
+  resume1:
+    id: rsu_local_1
+    candidateId: '@candidate1.id'
+```
+
+The loader creates `candidate1` without `primaryResumeId`, creates `resume1`, then
+sets the candidate's primary resume. Use a fixed ID for the deferred link here:
+`'@resume1.id'` would create a reference cycle because references are still
+resolved before inserts. The models must allow `primaryResumeId` to be omitted
+on create and accept the explicit string IDs shown above.
+
 Deferred fields require a saved `id`, a Prisma `update` delegate and the default
 writer. Use a transaction so a failed update rolls back the earlier creates.
+Include an `@updatedAt` field in `deferredFields` when that update must retain a
+specific fixture timestamp.
+
+### Parameters and templates
 
 Parameters, locale and templates can be combined:
 
@@ -142,22 +227,16 @@ processor, connections, then persistence. Parameters are local to their document
 `<{process.env.NAME}>` falls back to the environment when no explicit parameter
 with that path exists; missing variables raise an error.
 
-Faker 10 providers are supported, with aliases for the upstream README's
-`name.firstName`, `name.lastName`, `name.title`, `internet.userName` and
-`random.number`. For example, `{{random.number({"min": 1, "max": 10})}}` produces a
-number. `{{date.past}}` produces a Date; composed strings preserve surrounding text.
-Locale falls back to English. This is syntax compatibility, not identical random
-output or complete emulation of every removed Faker API.
+Use Faker 10 providers, such as `{{number.int({"min": 1, "max": 10})}}` for a
+number or `{{date.past}}` for a Date. Composed strings preserve surrounding text.
+Locale falls back to English; see [compatibility](#compatibility-and-attribution)
+for legacy provider aliases.
 
-Pass `seed` and `refDate` to reproduce package-generated Faker values, relative
-dates and random-reference choices:
+### Reproducible data
 
-```ts
-await loadFixtures(prisma, definitions, {
-  seed: 42,
-  refDate: '2026-01-01T00:00:00.000Z',
-})
-```
+Pass `seed` and `refDate` through the [CLI](#cli) or
+[API](#load-definitions-in-your-own-transaction) to reproduce package-generated
+Faker values, relative dates and random-reference choices.
 
 `seed` is an integer from 0 through 4294967295. `refDate` must be a real canonical
 UTC timestamp in `YYYY-MM-DDTHH:mm:ss.sssZ` form. Each load/reset owns its random
@@ -195,6 +274,16 @@ contract.
 
 ## API and persistence
 
+| Entry point                                      | Transaction ownership                           | Disconnects the client |
+| ------------------------------------------------ | ----------------------------------------------- | ---------------------- |
+| CLI                                              | Automatic, or your configured guard             | Yes                    |
+| `PrismaFixtures.load(client)`                    | Automatic                                       | No; caller owns it     |
+| `loadFixtures`, `cleanFixtures`, `resetFixtures` | Caller; pass a transaction client for atomicity | No; caller owns it     |
+
+CommonJS callers can use `require('@skmdev/prisma-fixtures')`.
+
+### Load from config
+
 To load the paths in `.prisma-fixtures` without the CLI, use an existing Prisma
 client (with its adapter already configured):
 
@@ -213,6 +302,32 @@ See the [runnable programmatic example](examples/hono/prisma/seed.mjs) and its
 ownership of the client and disconnects it when finished. A configured `client`
 module is ignored because the client is supplied; guarded client configs require
 the CLI.
+
+### Load definitions in your own transaction
+
+With your existing `prisma` client, read a file or directory and pass the
+definitions to `loadFixtures`. Returned records are keyed by fixture name:
+
+```ts
+import { loadFixtures, readFixtureDefinitions } from '@skmdev/prisma-fixtures'
+
+const definitions = readFixtureDefinitions('./fixtures')
+const records = await prisma.$transaction(
+  (tx) =>
+    loadFixtures(tx, definitions, {
+      seed: 42,
+      refDate: '2026-01-01T00:00:00.000Z',
+    }),
+  { timeout: 60_000 },
+)
+
+console.log(records.user1.id)
+```
+
+Disconnect `prisma` when your application is finished with it. For a standalone
+seed script, use `try`/`finally` as in the runnable example above.
+
+### Function reference
 
 - `readFixtureDefinitions(path): FixtureDefinition[]` parses without executing
   templates, importing processors or accessing a database.
@@ -236,10 +351,10 @@ the CLI.
   callers. Opaque provider, hook and database messages are not copied into the
   safe message.
 
-Default loading inserts records. Repeating a load can create duplicates or raise
-unique-constraint errors. Cleaning and resetting are explicit operations; normal
-loading never deletes or automatically upserts. All three functions accept a
-client or transaction client and leave transaction/disconnection ownership to you.
+### Cleanup and reset
+
+Default loading inserts records; it never deletes or automatically upserts.
+Repeating a load can create duplicates or raise unique-constraint errors.
 Use a transaction to prevent a failed reset from leaving data deleted:
 
 ```ts
@@ -282,38 +397,31 @@ applied. Rollback cannot undo external side effects in templates or processors.
 
 ## CLI
 
-Run `npx prisma-fixtures init` beside your `prisma.config.ts` to create the
-minimal config and fixtures directory. It uses an existing `prisma/fixtures`
-directory when present, otherwise `fixtures`, and never overwrites an existing
-`.prisma-fixtures`. The generated config is:
+Run these commands from your project directory:
 
-```json
-{
-  "fixtures": ["./fixtures"]
-}
-```
+| Command                                                            | Purpose                                                                        |
+| ------------------------------------------------------------------ | ------------------------------------------------------------------------------ |
+| `npx prisma-fixtures init`                                         | Create config and fixture directory without overwriting an existing config     |
+| `npx prisma-fixtures`                                              | Load configured fixtures; equivalent to the Quick start's `npx prisma db seed` |
+| `npx prisma-fixtures ./fixtures --list`                            | List fixture names and entities without executing code                         |
+| `npx prisma-fixtures --lint`                                       | Check fixtures without a client or database                                    |
+| `npx prisma-fixtures --clean`                                      | Clear database data without reading fixtures (PostgreSQL only)                 |
+| `npx prisma-fixtures --reset`                                      | Clear database data, then load fixtures (PostgreSQL only)                      |
+| `npx prisma-fixtures --seed 42 --refDate 2026-01-01T00:00:00.000Z` | Reproduce generated values and random references                               |
+| `npx prisma-fixtures --config ./test/.prisma-fixtures`             | Use a different config file                                                    |
+| `npx prisma-fixtures --help`                                       | Show all options                                                               |
 
-To reuse an existing fixture directory, pass its relative path, for example
+Use only one of `--clean`, `--reset`, `--list` and `--lint` at a time. Clean and
+reset affect tables beyond those in your fixtures; see [cleanup and reset](#cleanup-and-reset).
+These destructive modes must be requested on the command line, not saved in config.
+
+To reuse an existing directory during setup, run
 `npx prisma-fixtures init ../shared/fixtures`. The directory must already exist.
 
-Set `DATABASE_URL`, run `npx prisma generate`, then `npx prisma-fixtures`. The CLI
-reads the adjacent Prisma config for its schema and datasource, finds the
-`prisma-client` generator output, and uses your installed PostgreSQL adapter. A
-CommonJS TypeScript client uses the compiled path specified by a `tsconfig.json`
-with `rootDir` and `outDir` when it exists. Otherwise the CLI automatically
-registers the project's installed `ts-node` for an inferred `.ts` or `.cts`
-client. No client wrapper is needed. Use `--require` for additional processor
-hooks or path aliases.
+### Configuration
 
-```sh
-npx prisma-fixtures ./fixtures --list
-npx prisma-fixtures --clean
-npx prisma-fixtures --reset
-npx prisma-fixtures --seed 42 --refDate 2026-01-01T00:00:00.000Z
-npx prisma-fixtures --help
-```
-
-Other options can go in the same file:
+`.prisma-fixtures` is JSON. Start with the config from Quick start and add only
+the options you need:
 
 ```json
 {
@@ -325,77 +433,68 @@ Other options can go in the same file:
 }
 ```
 
-```sh
-npx prisma-fixtures
-npx prisma-fixtures --list
-npx prisma-fixtures --config ./test/.prisma-fixtures
-```
+| Config key       | CLI override            | Default / purpose                                                                        |
+| ---------------- | ----------------------- | ---------------------------------------------------------------------------------------- |
+| `fixtures`       | Positional paths        | No default; nonempty array of paths, required unless using positional paths or `--clean` |
+| `client`         | `--client <module>`     | Inferred from Prisma config; see client discovery below                                  |
+| `timeout`        | `--timeout <ms>`        | `60000`; positive integer transaction timeout in milliseconds                            |
+| `schema`         | `--schema <file>`       | None; JSON Schema for `--lint`                                                           |
+| `seed`           | `--seed <integer>`      | Random; integer from 0 through 4294967295                                                |
+| `refDate`        | `--refDate <timestamp>` | Current time; canonical UTC timestamp such as `2026-01-01T00:00:00.000Z`                 |
+| `preserveTables` | Config only             | `[]`; exact existing `schema.table` names excluded from clean/reset                      |
 
-The config accepts `fixtures` (a nonempty array of paths), optional `client` (an
-explicit generated client module plus `pg` adapter, or a legacy client module path),
-`timeout` (a positive integer in milliseconds), `schema` (a JSON Schema
-path used by `--lint`), `seed`, `refDate` and `preserveTables` (an array of exact
-`schema.table` strings used only by `--clean` and `--reset`).
+Unknown fields are rejected. Config paths are relative to the config file;
+positional paths and CLI flags are relative to the working directory and override
+matching config fields. Multiple fixture paths form one load and one transaction.
+Discovery checks only the current directory; an explicit `--config` file must exist.
+
 When `client` is omitted, `--clean` and `--reset` also preserve the PostgreSQL
 tables listed in Prisma's `tables.external` (with
 `experimental.externalTables` enabled). These `schema.table` entries are combined
 with any explicit `preserveTables` entries. For example,
 `tables: { external: ['public.flyway_schema_history'] }` in `prisma.config.ts`
 preserves that table without repeating it in `.prisma-fixtures`. Direct API calls
-still use only the options passed to them. Unknown fields are rejected.
+still use only the options passed to them. Ordinary loading ignores the preserve
+list and never deletes data.
 
-Config paths are relative to the config file;
-positional paths and matching CLI flags override config values field by field.
-Paths passed on the command line are relative to the working directory.
-Automatic discovery checks only the current directory. `--config` selects a
-different file and fails if it is missing. `--help` and `--version` skip config
-loading; `--list` only parses the JSON and fixture documents.
+### Client discovery and overrides
 
-To run through Prisma, add its supported
-[`migrations.seed`](https://www.prisma.io/docs/orm/v7/reference/prisma-config-reference)
-option to your existing `prisma.config.ts`:
+For write commands with no explicit `client`, the CLI reads the adjacent Prisma
+config's schema and datasource, resolves the static `prisma-client` output path,
+and uses your installed `@prisma/adapter-pg`. Run `prisma generate` first.
+For inferred `.ts`/`.cts` clients, it uses existing compiled output described by
+`tsconfig.json` with `rootDir` and `outDir`, or the project's installed `ts-node`
+when no loader is registered. Native ESM `.mts` clients work with Node's type
+stripping; see the [Hono generator](examples/hono/prisma/schema/00_base.prisma).
 
-```ts
-export default defineConfig({
-  // Keep your existing schema, datasource and other settings.
-  migrations: { seed: 'prisma-fixtures' },
-})
-```
+An explicit `client` can be an object with `module` (generated client path),
+`adapter: 'pg'` and optional `guard`, or a legacy module path exporting a client
+or factory. `--client` overrides either form with a legacy module path.
 
-Run `npx prisma db seed` to load or `npx prisma db seed -- --reset` to clear and
-reload from your project directory. Reset removes data from tables not preserved
-by `preserveTables` or Prisma's `tables.external`. The fixture CLI loads
-Prisma's config only for write commands when `client` is omitted. It resolves the
-generated client from a static `prisma-client` output path in the configured
-schema. Use an explicit `client` for custom generation or runtime setups.
+| CLI-only option                    | Purpose                                                                              |
+| ---------------------------------- | ------------------------------------------------------------------------------------ |
+| `--databaseUrl <url>`              | Override the datasource URL; a legacy client module must export a factory            |
+| `--require <module>`               | Preload a hook or path alias module; repeatable, resolved from the working directory |
+| `--debug`, `-d`                    | Include error type/code without fixture values or URLs                               |
+| `--no-color`                       | Accepted for compatibility; output is always plain                                   |
+| `--version`, `-v` / `--help`, `-h` | Print version/help without loading config                                            |
 
 The inferred client uses Prisma's datasource URL, then `DATABASE_URL` from the
 environment if the config omits it. `--databaseUrl` overrides both. Keep
 credentials out of the JSON config and shell history. The CLI does not
 independently load `.env` files; a `prisma.config.ts` import of `dotenv/config`
 works when Prisma loads that config. Otherwise use `--require dotenv/config`.
-For
-application-specific safety checks, `client.guard` may name a module exporting
+For application-specific safety checks, `client.guard` may name a module exporting
 `fixtureDatabaseUrl(env)` and `fixtureTransaction(client, action, timeout)`.
 Those functions validate the connection before client creation and wrap writes
-in the application's transaction guard. The legacy string form may export a
-client or factory; `--databaseUrl` requires a factory in that form. `--client`
-overrides either configured form with a legacy module path.
+in the application's transaction guard.
+
+### Transactions and diagnostics
 
 The CLI wraps writes in one transaction (60-second timeout; override with
 `--timeout <ms>`) and always disconnects a successfully acquired valid client.
-`--require <module>` may be repeated to preload hooks such as `ts-node/register`;
-modules resolve from the working directory. `--list` and `--lint` skip all hooks and client
-imports. `--version`/`-v`, `--help`/`-h`, `--debug`/`-d` and `--no-color` are supported.
-Multiple positional paths are combined into one load and one transaction.
-`--clean` clears database data without loading or reading fixture files; `--reset`
-clears database data and reloads fixtures in the same transaction. Both clear all
-non-system tables not named by `preserveTables`, including those absent from the
-fixture files, while preserving schema and migration history. Ordinary loading
-does not apply the preserve list or delete data. These two modes currently
-support PostgreSQL only.
-Use only one of `--clean`, `--reset`, `--list` and `--lint` at a time. Destructive
-modes must be requested on the command line and cannot be saved in config.
+`--list` and `--lint` skip all hooks, Prisma config loading and client imports;
+`--list` only parses the JSON config and fixture documents.
 Package diagnostics include a stable code and available filename, fixture name
 and JSON Pointer field path. Output is escaped, bounded and omits fixture values,
 URLs and opaque provider/client messages, including with `--debug`. API callers
@@ -517,6 +616,11 @@ visited nodes per validated value. No fixture values are logged by the engine.
 
 ## Compatibility and attribution
 
+Legacy Faker aliases `name.firstName`, `name.lastName`, `name.title`,
+`internet.userName` and `random.number` remain supported. This is syntax
+compatibility, not identical random output or complete emulation of every removed
+Faker API. New fixtures should use Faker 10 provider names.
+
 The fixture language follows
 [getbigger-io/prisma-fixtures](https://github.com/getbigger-io/prisma-fixtures),
 with modern client injection and validation. This new package does not expose the
@@ -524,36 +628,4 @@ old `Loader`, `Builder`, `Parser`, `Resolver` or `fixturesIterator` class API, o
 instantiate an implicit Prisma client. Replace that setup with the functions
 above. MIT; see [LICENSE](LICENSE) and retained upstream attribution in [NOTICE](NOTICE).
 
-## Develop and prepare a release
-
-```sh
-npm ci
-npm run verify
-npm run test:integration # Docker required; owns and removes a disposable Postgres
-npm audit --omit=dev
-npm pack --dry-run
-```
-
-The integration check installs the actual tarball into a clean temporary project,
-generates Prisma 7 clients, checks relations and rollback against PostgreSQL, and
-exercises CommonJS, ESM, TypeScript, the installed CLI, and the NestJS/Hono examples
-including Argon2 password verification and HTTP responses. CI runs on Node 22 and 24.
-Run `npm run test:examples` with Bun and Deno also on `PATH` to install, build,
-seed and check all ten framework/runtime examples in temporary directories.
-Development-only overrides update Prisma CLI's transitive `deepmerge-ts` and
-`mysql2` to patched releases. The real Prisma generation/database check validates
-the configuration path; remove the overrides when Prisma adopts patched versions.
-
-When ready to publish, authenticate to the npm account that owns the `@skmdev`
-scope, choose the release version, rerun the checks above and inspect the tarball:
-
-```sh
-npm login
-npm whoami
-npm publish --dry-run
-npm publish --access public
-```
-
-Only `dist`, the fixture JSON Schema, package metadata, README and license/notice files are published.
-`prepack` builds JavaScript and declarations. Publication and GitHub pushes are
-manual; nothing publishes automatically from this repository.
+Development checks and release instructions are in [CONTRIBUTING.md](CONTRIBUTING.md).
