@@ -4,7 +4,22 @@ const os = require('node:os')
 const path = require('node:path')
 const test = require('node:test')
 
-const { loadFixtures, readFixtureDefinitions } = require('../dist/index.js')
+const {
+  cleanFixtures,
+  FixtureError,
+  loadFixtures,
+  readFixtureDefinitions,
+  resetFixtures,
+} = require('../dist/index.js')
+
+async function rejected(promise) {
+  try {
+    await promise
+    assert.fail('Expected operation to reject')
+  } catch (error) {
+    return error
+  }
+}
 
 test('reads flat YAML and creates fixtures after resolving a scalar reference', async (t) => {
   const directory = fixtureDirectory(t)
@@ -39,6 +54,45 @@ test('reads flat YAML and creates fixtures after resolving a scalar reference', 
     ],
   )
   assert.equal(records.account2.id, 'id-2')
+})
+
+test('defers cyclic scalar links until after all fixture creates', async (t) => {
+  const directory = fixtureDirectory(t)
+  write(
+    directory,
+    'accounts.yml',
+    'entity: account\ndeferredFields: [parentId]\nitems:\n  first: { id: first, parentId: second }\n  second: { id: second, parentId: first }',
+  )
+  const calls = []
+  const rows = new Map()
+  const account = {
+    async create({ data }) {
+      calls.push(['create', data.id])
+      const row = { ...data }
+      rows.set(row.id, row)
+      return row
+    },
+    async update({ where, data }) {
+      calls.push(['update', where.id])
+      const row = { ...rows.get(where.id), ...data }
+      rows.set(where.id, row)
+      return row
+    },
+  }
+
+  const records = await loadFixtures(
+    { account },
+    readFixtureDefinitions(directory),
+  )
+
+  assert.deepEqual(calls, [
+    ['create', 'first'],
+    ['create', 'second'],
+    ['update', 'first'],
+    ['update', 'second'],
+  ])
+  assert.equal(records.first.parentId, 'second')
+  assert.equal(records.second.parentId, 'first')
 })
 
 test('reads sorted YAML and JSON, expands ranges independently and stays inert', (t) => {
@@ -189,6 +243,114 @@ test('selects wildcard and bounded references only where requested', async (t) =
   assert.equal(account.calls.length, 3)
 })
 
+test('reproduces Faker values, relative dates and random references per operation', async (t) => {
+  const definitions = [
+    {
+      name: 'account1',
+      entity: 'AnyEntity',
+      locale: 'en',
+      parameters: {},
+      data: {
+        name: '{{person.firstName}}',
+        date: '{{date.past}}',
+        explicitDate: '{{date.past({"refDate":"2020-01-01T00:00:00.000Z"})}}',
+      },
+    },
+    {
+      name: 'account2',
+      entity: 'AnyEntity',
+      locale: 'fr',
+      parameters: {},
+      data: { name: '{{person.firstName}}', word: '{{word.sample}}' },
+    },
+    {
+      name: 'selected',
+      entity: 'AnyEntity',
+      parameters: {},
+      data: { account: '@account*' },
+    },
+  ]
+  const writeFixture = async (fixture, data) => ({
+    id: fixture.name,
+    ...data,
+  })
+  const run = (seed) =>
+    loadFixtures(
+      {},
+      structuredClone(definitions),
+      { seed, refDate: '2026-01-01T00:00:00.000Z' },
+      writeFixture,
+    )
+
+  await import('@faker-js/faker')
+  const originalRandom = Math.random
+  Math.random = () => {
+    throw new Error('seeded loads must not use global Math.random')
+  }
+  t.after(() => {
+    Math.random = originalRandom
+  })
+
+  const [first, concurrent] = await Promise.all([run(123), run(123)])
+  const repeated = await run(123)
+  const different = await run(456)
+  const zero = await run(0)
+
+  assert.deepEqual(first, concurrent)
+  assert.deepEqual(first, repeated)
+  assert.notDeepEqual(
+    [first.account1.name, first.account1.date, first.account2.name],
+    [different.account1.name, different.account1.date, different.account2.name],
+  )
+  assert.ok(first.account1.date instanceof Date)
+  assert.ok(first.account1.explicitDate instanceof Date)
+  assert.ok(first.account1.date > new Date('2025-01-01T00:00:00.000Z'))
+  assert.ok(first.account1.date < new Date('2026-01-01T00:00:00.000Z'))
+  assert.ok(first.account1.explicitDate < new Date('2020-01-01T00:00:00.000Z'))
+  assert.equal(typeof zero.account1.name, 'string')
+  assert.ok(['account1', 'account2'].includes(first.selected.account.id))
+})
+
+test('rejects invalid generation options before hooks, cleanup or writes', async () => {
+  let cleans = 0
+  let writes = 0
+  const client = {
+    async $executeRawUnsafe() {
+      cleans += 1
+    },
+  }
+  const writeFixture = async () => {
+    writes += 1
+    return {}
+  }
+  const invalid = [
+    null,
+    [],
+    { extra: true },
+    { seed: null },
+    { seed: '1' },
+    { seed: -1 },
+    { seed: 1.5 },
+    { seed: 0x1_0000_0000 },
+    { refDate: null },
+    { refDate: '2026-01-01' },
+    { refDate: '2026-02-30T00:00:00.000Z' },
+  ]
+
+  for (const options of invalid) {
+    await assert.rejects(
+      loadFixtures({}, [], options, writeFixture),
+      /load options/i,
+    )
+    await assert.rejects(
+      resetFixtures(client, [], options, writeFixture),
+      /load options/i,
+    )
+  }
+  assert.equal(cleans, 0)
+  assert.equal(writes, 0)
+})
+
 test('supports generic entities through the optional writer', async (t) => {
   const directory = fixtureDirectory(t)
   write(
@@ -211,6 +373,210 @@ test('supports generic entities through the optional writer', async (t) => {
   assert.equal(calls[0].fixture.entity, 'AnyEntity')
   assert.deepEqual(calls[0].data, { label: 'fixture' })
   assert.deepEqual(records.widget, { id: 'saved-widget', label: 'fixture' })
+})
+
+test('cleans PostgreSQL data with one fixed query, preserved tables and the client receiver', async () => {
+  const calls = []
+  const client = {
+    async $executeRawUnsafe(...args) {
+      assert.equal(this, client)
+      calls.push(args)
+    },
+  }
+
+  await cleanFixtures(client, {
+    preserveTables: ['tenant.audit_log'],
+  })
+
+  assert.equal(calls.length, 1)
+  const preserved = JSON.parse(
+    Buffer.from(
+      calls[0][0].split("decode('")[1].split("'")[0],
+      'hex',
+    ).toString(),
+  )
+  assert.deepEqual(preserved, [{ schema: 'tenant', table: 'audit_log' }])
+  assert.match(calls[0][0], /^DO \$\$/)
+  assert.match(
+    calls[0][0],
+    /format\('%I\.%I', schemaname, tablename\).*ORDER BY schemaname, tablename/s,
+  )
+  assert.match(calls[0][0], /FROM pg_catalog\.pg_tables/)
+  assert.match(calls[0][0], /tablename <> '_prisma_migrations'/)
+  assert.match(calls[0][0], /jsonb_to_recordset\(preserved\)/)
+  assert.match(calls[0][0], /AS requested\("schema" text, "table" text\)/)
+  assert.match(calls[0][0], /CONTINUE IDENTITY RESTRICT/)
+  assert.doesNotMatch(calls[0][0], /tenant|audit_log|CASCADE|DROP/)
+  await assert.rejects(cleanFixtures({}), /\$executeRawUnsafe/)
+})
+
+test('rejects invalid cleanup options before querying the database', async () => {
+  let calls = 0
+  const client = {
+    async $executeRawUnsafe() {
+      calls += 1
+    },
+  }
+  const invalid = [
+    null,
+    [],
+    { extra: true },
+    { preserveTables: {} },
+    { preserveTables: [null] },
+    { preserveTables: ['audit_log'] },
+    { preserveTables: ['public.'] },
+    { preserveTables: ['public.audit.log'] },
+    { preserveTables: [{ schema: 'public', table: 'users' }] },
+    { preserveTables: [{ schema: 'public' }] },
+    { preserveTables: [{ schema: '', table: 'users' }] },
+    { preserveTables: [{ schema: 'public', table: 'users', extra: true }] },
+    { preserveTables: ['public.users', 'public.users'] },
+    { preserveTables: ['public.users', { schema: 'public', table: 'users' }] },
+  ]
+
+  for (const options of invalid) {
+    await assert.rejects(cleanFixtures(client, options), /cleanup options/i)
+  }
+  assert.equal(calls, 0)
+})
+
+test('resets once-prepared fixtures after cleaning and supports a writer', async () => {
+  const events = []
+  const client = {
+    async $executeRawUnsafe() {
+      events.push('clean')
+    },
+  }
+  const definitions = [
+    {
+      name: 'parent',
+      entity: 'AnyEntity',
+      parameters: { counter: { value: 1 } },
+      data: { label: '<%= parameters.counter.value++ %>' },
+    },
+    {
+      name: 'child',
+      entity: 'AnyEntity',
+      parameters: {},
+      data: { parentId: '@parent.id' },
+    },
+  ]
+
+  const records = await resetFixtures(
+    client,
+    definitions,
+    async (fixture, data) => {
+      events.push(`write:${fixture.name}`)
+      return { id: `${fixture.name}-id`, ...data }
+    },
+  )
+
+  assert.deepEqual(events, ['clean', 'write:parent', 'write:child'])
+  assert.equal(definitions[0].parameters.counter.value, 2)
+  assert.equal(records.parent.label, '1')
+  assert.equal(records.child.parentId, 'parent-id')
+})
+
+test('accepts cleanup options before the reset writer', async () => {
+  const events = []
+  const client = {
+    async $executeRawUnsafe(sql) {
+      const preserved = Buffer.from(
+        sql.split("decode('")[1].split("'")[0],
+        'hex',
+      ).toString()
+      events.push(`clean:${preserved}`)
+    },
+  }
+  const definitions = [
+    {
+      name: 'record',
+      entity: 'AnyEntity',
+      parameters: {},
+      data: { label: 'fixture' },
+    },
+  ]
+
+  const records = await resetFixtures(
+    client,
+    definitions,
+    { preserveTables: ['tenant.audit_log'] },
+    async (fixture, data) => {
+      events.push(`write:${fixture.name}`)
+      return { id: 1, ...data }
+    },
+  )
+
+  assert.deepEqual(events, [
+    'clean:[{"schema":"tenant","table":"audit_log"}]',
+    'write:record',
+  ])
+  assert.deepEqual(records.record, { id: 1, label: 'fixture' })
+})
+
+test('rejects reset preflight failures before cleaning', async () => {
+  let cleans = 0
+  const client = {
+    async $executeRawUnsafe() {
+      cleans += 1
+    },
+  }
+  const writeFixture = async () => ({})
+
+  await assert.rejects(
+    resetFixtures(
+      client,
+      [
+        {
+          name: 'broken',
+          entity: 'AnyEntity',
+          parameters: {},
+          data: { missing: '@unknown' },
+        },
+      ],
+      writeFixture,
+    ),
+    /reference/i,
+  )
+  await assert.rejects(
+    resetFixtures(
+      client,
+      [
+        {
+          name: 'broken',
+          entity: 'AnyEntity',
+          parameters: {},
+          processor: '/definitely-missing-prisma-fixture-processor.mjs',
+          data: {},
+        },
+      ],
+      writeFixture,
+    ),
+  )
+  assert.equal(cleans, 0)
+})
+
+test('does not create fixtures when reset cleanup fails', async () => {
+  const account = createDelegate([], 'account', (data) => data)
+  const client = {
+    account,
+    async $executeRawUnsafe() {
+      throw new Error('cleanup failed')
+    },
+  }
+
+  await assert.rejects(
+    resetFixtures(client, [
+      {
+        name: 'account',
+        entity: 'account',
+        parameters: {},
+        data: {},
+      },
+    ]),
+    /cleanup failed/,
+  )
+  assert.equal(account.calls.length, 0)
 })
 
 test('renders parameters, environment fallback, Faker legacy names and EJS', async (t) => {
@@ -287,7 +653,7 @@ test('loads explicit and extensionless ESM, CommonJS and typed processors', asyn
   write(
     directory,
     'module.mjs',
-    'export default class { async preProcess(name, data) { await Promise.resolve(); return { ...data, processor: `esm:${name}` } } }',
+    'await Promise.resolve(); export default class { async preProcess(name, data) { return { ...data, processor: `esm:${name}` } } }',
   )
   write(
     directory,
@@ -317,6 +683,36 @@ test('loads explicit and extensionless ESM, CommonJS and typed processors', asyn
     account.calls.map(({ data }) => data.processor),
     ['direct:fixture0', 'exports:fixture1', 'esm:fixture2', 'typed:fixture3'],
   )
+})
+
+test('honors a registered CommonJS require hook for TypeScript processors', async (t) => {
+  const directory = fixtureDirectory(t)
+  const previousHook = require.extensions['.ts']
+  require.extensions['.ts'] = (module, filename) => {
+    assert.equal(fs.readFileSync(filename, 'utf8'), 'compile-through-hook')
+    module._compile(
+      'module.exports = class { preProcess(name, data) { return { ...data, processor: `hooked:${name}` } } }',
+      filename,
+    )
+  }
+  t.after(() => {
+    if (previousHook) require.extensions['.ts'] = previousHook
+    else delete require.extensions['.ts']
+  })
+  write(directory, 'hooked.ts', 'compile-through-hook')
+  write(
+    directory,
+    'fixture.yml',
+    'entity: account\nprocessor: ./hooked\nitems:\n  fixture: { value: 1 }',
+  )
+  const account = createDelegate([], 'account', (data) => ({
+    id: 'one',
+    ...data,
+  }))
+
+  await loadFixtures({ account }, readFixtureDefinitions(directory))
+
+  assert.equal(account.calls[0].data.processor, 'hooked:fixture')
 })
 
 test('rejects duplicate JSON keys and malformed JSON', (t) => {
@@ -387,6 +783,232 @@ test('validates delegates, templates, processors, references and cycles before w
     loadFixtures({}, readFixtureDefinitions(directory)),
     /delegate/i,
   )
+})
+
+test('reports safe source, fixture and nested paths for references and cycles', async (t) => {
+  const directory = fixtureDirectory(t)
+  const account = createDelegate([], 'account', (data) => data)
+  write(
+    directory,
+    'references.yml',
+    'entity: account\nitems:\n  broken:\n    nested:\n      owner: "@missing"',
+  )
+
+  const missing = await rejected(
+    loadFixtures({ account }, readFixtureDefinitions(directory)),
+  )
+  assert.ok(missing instanceof FixtureError)
+  assert.equal(missing.code, 'FIXTURE_REFERENCE_MISSING')
+  assert.equal(missing.stage, 'preparing references')
+  assert.equal(missing.file, 'references.yml')
+  assert.equal(missing.fixtureName, 'broken')
+  assert.equal(missing.path, '/nested/owner')
+  assert.equal(Object.keys(missing).includes('cause'), false)
+
+  fs.rmSync(path.join(directory, 'references.yml'))
+  write(
+    directory,
+    'cycle.yml',
+    'entity: account\nitems:\n  first: { value: "@second" }\n  second: { value: "@first" }',
+  )
+  const cycle = await rejected(
+    loadFixtures({ account }, readFixtureDefinitions(directory)),
+  )
+  assert.ok(cycle instanceof FixtureError)
+  assert.equal(cycle.code, 'FIXTURE_DEPENDENCY_CYCLE')
+  assert.equal(cycle.file, 'cycle.yml')
+  assert.equal(cycle.path, '/value')
+  assert.match(cycle.message, /first.*second.*first/)
+})
+
+test('wraps template, processor, connection and writer failures with private causes', async (t) => {
+  const directory = fixtureDirectory(t)
+  const account = createDelegate([], 'account', (data) => data)
+  write(
+    directory,
+    'template.yml',
+    'entity: account\nitems:\n  broken:\n    nested: { value: "{{missing.provider}}" }',
+  )
+  const template = await rejected(
+    loadFixtures({ account }, readFixtureDefinitions(directory)),
+  )
+  assert.ok(template instanceof FixtureError)
+  assert.equal(template.code, 'FIXTURE_TEMPLATE_FAILED')
+  assert.equal(template.file, 'template.yml')
+  assert.equal(template.fixtureName, 'broken')
+  assert.equal(template.path, '/nested/value')
+  assert.match(template.cause.message, /provider/i)
+  assert.equal(Object.keys(template).includes('cause'), false)
+
+  write(
+    directory,
+    'template.yml',
+    `entity: account
+items:
+  broken:
+    nested:
+      value: '{{helpers.arrayElement([{"constructor":"PRIVATE-UNSAFE"}])}}'
+`,
+  )
+  const unsafeTemplate = await rejected(
+    loadFixtures({ account }, readFixtureDefinitions(directory)),
+  )
+  assert.ok(unsafeTemplate instanceof FixtureError)
+  assert.equal(unsafeTemplate.code, 'FIXTURE_TEMPLATE_FAILED')
+  assert.equal(unsafeTemplate.fixtureName, 'broken')
+  assert.equal(unsafeTemplate.path, '/nested/value')
+  assert.match(unsafeTemplate.cause.message, /unsafe/i)
+
+  fs.rmSync(path.join(directory, 'template.yml'))
+  write(
+    directory,
+    'processor.cjs',
+    "module.exports = class { preProcess() { throw new Error('PRIVATE-PROCESSOR') } }",
+  )
+  write(
+    directory,
+    'processor.yml',
+    'entity: account\nprocessor: ./processor.cjs\nitems:\n  processed: {}',
+  )
+  const processor = await rejected(
+    loadFixtures({ account }, readFixtureDefinitions(directory)),
+  )
+  assert.equal(processor.code, 'FIXTURE_PROCESSOR_FAILED')
+  assert.equal(processor.fixtureName, 'processed')
+  assert.equal(processor.cause.message, 'PRIVATE-PROCESSOR')
+
+  fs.writeFileSync(
+    path.join(directory, 'unsafe-processor.cjs'),
+    "module.exports = class { preProcess() { return { constructor: 'PRIVATE-UNSAFE' } } }",
+  )
+  write(
+    directory,
+    'processor.yml',
+    'entity: account\nprocessor: ./unsafe-processor.cjs\nitems:\n  processed: {}',
+  )
+  const unsafeProcessor = await rejected(
+    loadFixtures({ account }, readFixtureDefinitions(directory)),
+  )
+  assert.ok(unsafeProcessor instanceof FixtureError)
+  assert.equal(unsafeProcessor.code, 'FIXTURE_PROCESSOR_FAILED')
+  assert.equal(unsafeProcessor.fixtureName, 'processed')
+  assert.match(unsafeProcessor.cause.message, /unsafe/i)
+
+  fs.rmSync(path.join(directory, 'processor.yml'))
+  write(
+    directory,
+    'connections.yml',
+    'entity: account\nconnectedFields: [owner]\nitems:\n  source: {}\n  target: { owner: "@source" }',
+  )
+  const connection = await rejected(
+    loadFixtures({ account }, readFixtureDefinitions(directory)),
+  )
+  assert.equal(connection.code, 'FIXTURE_CONNECTION_FAILED')
+  assert.equal(connection.fixtureName, 'target')
+  assert.equal(connection.path, '/owner')
+
+  const indexedConnection = await rejected(
+    loadFixtures(
+      {},
+      [
+        {
+          name: 'indexed',
+          entity: 'AnyEntity',
+          parameters: {},
+          connectedFields: ['members'],
+          data: { members: [{ id: 1 }, {}] },
+        },
+      ],
+      async () => ({}),
+    ),
+  )
+  assert.equal(indexedConnection.code, 'FIXTURE_CONNECTION_FAILED')
+  assert.equal(indexedConnection.path, '/members/1')
+
+  const writeFailure = await rejected(
+    loadFixtures(
+      {},
+      [
+        {
+          name: 'written',
+          entity: 'AnyEntity',
+          parameters: {},
+          data: {},
+        },
+      ],
+      async () => {
+        throw new Error('PRIVATE-WRITER')
+      },
+    ),
+  )
+  assert.equal(writeFailure.code, 'FIXTURE_WRITE_FAILED')
+  assert.equal(writeFailure.fixtureName, 'written')
+  assert.equal(writeFailure.cause.message, 'PRIVATE-WRITER')
+
+  const forged = await rejected(
+    loadFixtures(
+      {},
+      [
+        {
+          name: 'written',
+          entity: 'AnyEntity',
+          parameters: {},
+          data: {},
+        },
+      ],
+      async () => {
+        throw new FixtureError(
+          'FIXTURE_WRITE_FAILED',
+          'PRIVATE-FORGED-MESSAGE',
+          { stage: 'PRIVATE-FORGED-STAGE', fixtureName: 'PRIVATE-FORGED-NAME' },
+        )
+      },
+    ),
+  )
+  assert.equal(forged.code, 'FIXTURE_WRITE_FAILED')
+  assert.equal(forged.message, 'Fixture persistence failed')
+  assert.equal(forged.fixtureName, 'written')
+  assert.equal(forged.cause.message, 'PRIVATE-FORGED-MESSAGE')
+})
+
+test('reference and connection errors retain locations without fixture metadata', () => {
+  const {
+    resolveFixtureReferences,
+    applyFixtureConnections,
+  } = require('../dist/fixture-reference.js')
+
+  for (const [reference, code] of [
+    ['@invalid.field.extra', 'FIXTURE_REFERENCE_INVALID'],
+    ['@missing', 'FIXTURE_REFERENCE_MISSING'],
+    ['@source.constructor', 'FIXTURE_REFERENCE_INVALID'],
+    ['@source.missing', 'FIXTURE_REFERENCE_FIELD_MISSING'],
+  ]) {
+    assert.throws(
+      () =>
+        resolveFixtureReferences(
+          { 'owner/name': [reference] },
+          { source: { id: 1 } },
+        ),
+      {
+        name: 'FixtureError',
+        code,
+        stage: 'resolving references',
+        path: '/owner~1name/0',
+        file: undefined,
+        fixtureName: undefined,
+        entity: undefined,
+      },
+    )
+  }
+  assert.throws(() => applyFixtureConnections({ owners: [{}] }, ['owners']), {
+    name: 'FixtureError',
+    code: 'FIXTURE_CONNECTION_FAILED',
+    stage: 'connecting fixture',
+    path: '/owners/0',
+    file: undefined,
+    fixtureName: undefined,
+    entity: undefined,
+  })
 })
 
 test('checks scalar references against saved own properties and blocks unsafe fields', async (t) => {

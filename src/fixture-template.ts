@@ -6,9 +6,15 @@ import { pathToFileURL } from 'node:url'
 import ejs from 'ejs'
 
 import {
+  appendFixturePath,
+  createFixtureError,
+  wrapFixtureError,
+} from './fixture-error'
+import {
   assertSafeFixtureValue,
   DANGEROUS_KEYS,
   type FixtureDefinition,
+  fixtureErrorContext,
   isFixtureRecord,
 } from './fixture-document'
 
@@ -22,68 +28,119 @@ export type FixtureProcessor = {
 export type ProcessorConstructor = new () => FixtureProcessor
 
 type FakerInstance = Record<string, unknown>
+type FixtureRandomizer = {
+  next(): number
+  seed(value: number | number[]): void
+}
 
 const requireProcessor = createRequire(__filename)
 const PROCESSOR_EXTENSIONS = ['.js', '.cjs', '.mjs', '.ts', '.cts', '.mts']
 
 export async function renderFixtureTemplates(
   fixture: FixtureDefinition,
+  randomizer: FixtureRandomizer,
+  refDate?: string,
 ): Promise<Record<string, unknown>> {
   const fakerModule = await import('@faker-js/faker')
-  let generator = fakerModule.faker as unknown as FakerInstance
+  let locale = fakerModule.en
   if (fixture.locale) {
     if (!Object.hasOwn(fakerModule.allLocales, fixture.locale)) {
-      throw new Error('Unknown Faker locale')
+      throw createFixtureError(
+        'FIXTURE_TEMPLATE_FAILED',
+        'Unknown Faker locale',
+        fixtureErrorContext(fixture, 'rendering templates'),
+      )
     }
-    const locale =
+    locale =
       fakerModule.allLocales[
         fixture.locale as keyof typeof fakerModule.allLocales
       ]
-    generator = new fakerModule.Faker({
-      locale: [locale, fakerModule.en],
-    }) as unknown as FakerInstance
   }
+  const generator = new fakerModule.Faker({
+    locale: locale === fakerModule.en ? [locale] : [locale, fakerModule.en],
+    randomizer,
+  }) as unknown as FakerInstance & {
+    setDefaultRefDate(value: string): void
+  }
+  if (refDate !== undefined) generator.setDefaultRefDate(refDate)
 
-  const data = renderValue(fixture.data, fixture, generator)
-  if (!isFixtureRecord(data)) throw new Error('Invalid fixture data')
-  assertSafeFixtureValue(data)
+  const data = renderValue(fixture.data, fixture, generator, '')
+  if (!isFixtureRecord(data)) {
+    throw createFixtureError(
+      'FIXTURE_TEMPLATE_FAILED',
+      'Fixture template produced invalid data',
+      fixtureErrorContext(fixture, 'rendering templates'),
+    )
+  }
+  try {
+    assertSafeFixtureValue(data)
+  } catch (error) {
+    throw wrapFixtureError(
+      error,
+      'FIXTURE_TEMPLATE_FAILED',
+      'Fixture template produced invalid data',
+      fixtureErrorContext(fixture, 'rendering templates'),
+    )
+  }
   return data
+}
+
+export async function createFixtureRandomizer(
+  seed?: number,
+): Promise<FixtureRandomizer> {
+  const { generateMersenne53Randomizer } = await import('@faker-js/faker')
+  return generateMersenne53Randomizer(seed)
 }
 
 function renderValue(
   value: unknown,
   fixture: FixtureDefinition,
   faker: FakerInstance,
+  path: string,
 ): unknown {
   if (Array.isArray(value)) {
-    return value.map((item) => renderValue(item, fixture, faker))
+    return value.map((item, index) =>
+      renderValue(item, fixture, faker, appendFixturePath(path, index)),
+    )
   }
   if (isFixtureRecord(value)) {
     return Object.fromEntries(
       Object.entries(value).map(([key, item]) => [
         key,
-        renderValue(item, fixture, faker),
+        renderValue(item, fixture, faker, appendFixturePath(path, key)),
       ]),
     )
   }
   if (typeof value !== 'string') return value
 
-  const template = value.includes('<%') ? ejs.render(value, fixture) : value
-  const providerPattern = /\{\{([\s\S]*?)\}\}/g
-  const providers = [...template.matchAll(providerPattern)]
-  const singleProvider =
-    providers.length === 1 && providers[0]![0].length === template.length
-      ? providers[0]
-      : undefined
-  const generated = singleProvider
-    ? fakeValue(singleProvider[1]!, faker)
-    : template.replace(providerPattern, (_token, provider: string) =>
-        String(fakeValue(provider, faker)),
-      )
-  if (typeof generated !== 'string') return generated
-  return generated.replace(/<\{(.*?)\}>/g, (_token, key: string) =>
-    String(parameterValue(fixture.parameters, key) ?? ''),
-  )
+  try {
+    const template = value.includes('<%') ? ejs.render(value, fixture) : value
+    const providerPattern = /\{\{([\s\S]*?)\}\}/g
+    const providers = [...template.matchAll(providerPattern)]
+    const singleProvider =
+      providers.length === 1 && providers[0]![0].length === template.length
+        ? providers[0]
+        : undefined
+    const generated = singleProvider
+      ? fakeValue(singleProvider[1]!, faker)
+      : template.replace(providerPattern, (_token, provider: string) =>
+          String(fakeValue(provider, faker)),
+        )
+    if (typeof generated !== 'string') {
+      assertSafeFixtureValue(generated)
+      return generated
+    }
+    return generated.replace(/<\{(.*?)\}>/g, (_token, key: string) =>
+      String(parameterValue(fixture.parameters, key) ?? ''),
+    )
+  } catch (error) {
+    throw wrapFixtureError(
+      error,
+      'FIXTURE_TEMPLATE_FAILED',
+      'Fixture template failed',
+      fixtureErrorContext(fixture, 'rendering templates', path),
+    )
+  }
 }
 
 function fakeValue(expression: string, faker: FakerInstance): unknown {
@@ -140,7 +197,11 @@ function parameterValue(
 ): unknown {
   const parts = key.split('.')
   if (parts.some((part) => DANGEROUS_KEYS.has(part))) {
-    throw new Error('Unknown fixture parameter')
+    throw createFixtureError(
+      'FIXTURE_TEMPLATE_FAILED',
+      'Unknown fixture parameter',
+      { stage: 'rendering templates' },
+    )
   }
   let value: unknown = parameters
   let found = true
@@ -160,23 +221,42 @@ function parameterValue(
       if (environmentValue !== undefined) return environmentValue
     }
   }
-  throw new Error('Unknown fixture parameter')
+  throw createFixtureError(
+    'FIXTURE_TEMPLATE_FAILED',
+    'Unknown fixture parameter',
+    { stage: 'rendering templates' },
+  )
 }
 
 export async function loadFixtureProcessor(
   processorPath: string,
 ): Promise<ProcessorConstructor> {
   const resolvedPath = resolveProcessorPath(processorPath)
-  const namespace: unknown = await import(pathToFileURL(resolvedPath).href)
-  if (!isFixtureRecord(namespace)) {
-    throw new Error('Fixture processor must export a default class')
+  let loaded: unknown
+  try {
+    loaded = requireProcessor(resolvedPath)
+  } catch (error) {
+    if (!requiresNativeImport(error)) throw error
+    loaded = await import(pathToFileURL(resolvedPath).href)
   }
-  let constructor: unknown = namespace.default
-  if (isFixtureRecord(constructor)) constructor = constructor.default
+
+  let constructor = loaded
+  for (let depth = 0; depth < 2 && isFixtureRecord(constructor); depth += 1) {
+    if (!Object.hasOwn(constructor, 'default')) break
+    constructor = constructor.default
+  }
   if (typeof constructor !== 'function') {
     throw new Error('Fixture processor must export a default class')
   }
   return constructor as ProcessorConstructor
+}
+
+function requiresNativeImport(error: unknown): boolean {
+  if (error === null || typeof error !== 'object' || !('code' in error)) {
+    return false
+  }
+  const code = (error as { code?: unknown }).code
+  return code === 'ERR_REQUIRE_ESM' || code === 'ERR_REQUIRE_ASYNC_MODULE'
 }
 
 function resolveProcessorPath(processorPath: string): string {
@@ -202,17 +282,40 @@ export async function runFixtureProcessor(
   data: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
   let result: unknown = data
-  if (constructor) {
-    const processor = new constructor()
-    if (processor.preProcess !== undefined) {
-      if (typeof processor.preProcess !== 'function') {
-        throw new Error('Invalid fixture processor hook')
+  try {
+    if (constructor) {
+      const processor = new constructor()
+      if (processor.preProcess !== undefined) {
+        if (typeof processor.preProcess !== 'function') {
+          throw new Error('Invalid fixture processor hook')
+        }
+        result = await processor.preProcess(fixture.name, data)
       }
-      result = await processor.preProcess(fixture.name, data)
     }
+  } catch (error) {
+    throw wrapFixtureError(
+      error,
+      'FIXTURE_PROCESSOR_FAILED',
+      'Fixture processor failed',
+      fixtureErrorContext(fixture, 'processing fixture'),
+    )
   }
-  if (!isFixtureRecord(result))
-    throw new Error('Invalid fixture processor result')
-  assertSafeFixtureValue(result)
+  if (!isFixtureRecord(result)) {
+    throw createFixtureError(
+      'FIXTURE_PROCESSOR_FAILED',
+      'Fixture processor returned invalid data',
+      fixtureErrorContext(fixture, 'processing fixture'),
+    )
+  }
+  try {
+    assertSafeFixtureValue(result)
+  } catch (error) {
+    throw wrapFixtureError(
+      error,
+      'FIXTURE_PROCESSOR_FAILED',
+      'Fixture processor returned invalid data',
+      fixtureErrorContext(fixture, 'processing fixture'),
+    )
+  }
   return result
 }

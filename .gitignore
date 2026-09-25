@@ -2,7 +2,9 @@ node_modules/
 dist/
 *.tgz
 .scratch/
+plans/
 test/generated/
+test/fixture-schema/
 .env*
 !.env.example
 *.pem

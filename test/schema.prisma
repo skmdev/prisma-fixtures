@@ -4,6 +4,11 @@ generator client {
   moduleFormat = "cjs"
 }
 
+generator fixtures {
+  provider = "prisma-fixtures-generator"
+  output   = "./fixture-schema"
+}
+
 datasource db {
   provider = "postgresql"
 }

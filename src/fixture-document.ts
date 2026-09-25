@@ -1,7 +1,30 @@
 import fs from 'node:fs'
 import path from 'node:path'
 
-import { parseDocument } from 'yaml'
+import { LineCounter, parseDocument } from 'yaml'
+import {
+  FixtureError,
+  markFixtureErrorTrusted,
+  type FixtureErrorContext,
+} from './fixture-error'
+
+// Only messages constructed here are safe to display as lint diagnostics.
+export class FixtureDocumentError extends FixtureError {
+  constructor(
+    message: string,
+    context: Partial<FixtureErrorContext> = {},
+    cause?: unknown,
+  ) {
+    super(
+      'FIXTURE_DOCUMENT_INVALID',
+      message,
+      { stage: 'reading fixtures', ...context },
+      cause,
+    )
+    this.name = 'FixtureDocumentError'
+    markFixtureErrorTrusted(this)
+  }
+}
 
 export type FixtureDefinition = {
   name: string
@@ -11,6 +34,32 @@ export type FixtureDefinition = {
   processor?: string
   locale?: string
   connectedFields?: string[]
+  deferredFields?: string[]
+}
+
+const fixtureSources = new WeakMap<FixtureDefinition, { file: string }>()
+
+export function fixtureErrorContext(
+  fixture: FixtureDefinition | undefined,
+  stage: string,
+  path?: string,
+): FixtureErrorContext {
+  if (!fixture) return { stage, path }
+  return {
+    stage,
+    file: fixtureSources.get(fixture)?.file,
+    fixtureName: fixture.name,
+    entity: fixture.entity,
+    ...(path === undefined ? {} : { path }),
+  }
+}
+
+export function inheritFixtureSource(
+  source: FixtureDefinition,
+  target: FixtureDefinition,
+): void {
+  const provenance = fixtureSources.get(source)
+  if (provenance) fixtureSources.set(target, provenance)
 }
 
 const MAX_FILE_BYTES = 1024 * 1024
@@ -24,20 +73,28 @@ const FIELD_PATTERN = /^[A-Za-z][A-Za-z0-9_]*$/
 const RANGE_PATTERN = /^([A-Za-z][A-Za-z0-9_-]*)\{(\d+)\.\.(\d+)\}$/
 const CURRENT_PATTERN = /\(\$current(?:([+\-*/])(\d+))?\)/g
 
-export function readFixtureDocuments(targetPath: string): FixtureDefinition[] {
+export function readFixtureDocuments(
+  targetPath: string,
+  validateDocument?: (value: unknown, file: string) => void,
+): FixtureDefinition[] {
   const definitions: FixtureDefinition[] = []
   for (const file of collectFiles(targetPath)) {
+    const document = readDocument(file)
     const normalized = normalizeDocument(
-      readDocument(file),
+      document,
       file,
       MAX_FIXTURE_DEFINITIONS - definitions.length,
     )
+    validateDocument?.(document, file)
     definitions.push(...normalized)
   }
 
   const names = new Set<string>()
   for (const { name } of definitions) {
-    if (names.has(name)) throw new Error('Duplicate fixture name')
+    if (names.has(name))
+      throw new FixtureDocumentError('Duplicate fixture name', {
+        fixtureName: name,
+      })
     names.add(name)
   }
   return definitions
@@ -48,30 +105,37 @@ function collectFiles(targetPath: string) {
   try {
     stat = fs.statSync(targetPath)
   } catch {
-    throw new Error(`Fixture path not found: ${targetPath}`)
+    throw new FixtureDocumentError(
+      `Fixture path not found: ${JSON.stringify(targetPath)}`,
+    )
   }
 
   if (stat.isFile()) {
     if (!/\.(json|ya?ml)$/i.test(targetPath)) {
-      throw new Error('Fixture file must use .json, .yml or .yaml')
+      throw new FixtureDocumentError(
+        'Fixture file must use .json, .yml or .yaml',
+      )
     }
     return [targetPath]
   }
   if (!stat.isDirectory())
-    throw new Error('Fixture path is not a file or directory')
+    throw new FixtureDocumentError('Fixture path is not a file or directory')
 
   const files = fs
     .readdirSync(targetPath, { withFileTypes: true })
     .filter((entry) => entry.isFile() && /\.(json|ya?ml)$/i.test(entry.name))
     .map((entry) => path.join(targetPath, entry.name))
     .sort()
-  if (files.length > MAX_FILES) throw new Error('Too many fixture files')
+  if (files.length > MAX_FILES)
+    throw new FixtureDocumentError('Too many fixture files')
   return files
 }
 
 function readDocument(file: string): unknown {
   if (fs.statSync(file).size > MAX_FILE_BYTES) {
-    throw new Error(`Fixture file is too large: ${path.basename(file)}`)
+    throw new FixtureDocumentError(
+      `Fixture file is too large: ${JSON.stringify(path.basename(file))}`,
+    )
   }
   const raw = fs.readFileSync(file, 'utf8')
 
@@ -81,8 +145,14 @@ function readDocument(file: string): unknown {
       : parseYaml(raw)
     assertSafeFixtureValue(value)
     return value
-  } catch {
-    throw new Error(`Invalid fixture document: ${path.basename(file)}`)
+  } catch (error) {
+    const detail =
+      error instanceof FixtureDocumentError ? ` (${error.message})` : ''
+    throw new FixtureDocumentError(
+      `Invalid fixture document: ${JSON.stringify(path.basename(file))}${detail}`,
+      { file: path.basename(file) },
+      error,
+    )
   }
 }
 
@@ -95,13 +165,19 @@ function parseJson(raw: string): unknown {
 }
 
 function parseYaml(raw: string): unknown {
+  const lineCounter = new LineCounter()
   const document = parseDocument(raw, {
+    lineCounter,
     prettyErrors: false,
     strict: true,
     stringKeys: true,
     uniqueKeys: true,
   })
-  if (document.errors.length || document.warnings.length) throw new Error()
+  const issue = document.errors[0] ?? document.warnings[0]
+  if (issue) {
+    const { line, col } = lineCounter.linePos(issue.pos[0])
+    throw new FixtureDocumentError(`${issue.code} at ${line}:${col}`)
+  }
   return document.toJS({ maxAliasCount: 0 })
 }
 
@@ -113,7 +189,15 @@ function normalizeDocument(
   if (!isFixtureRecord(value)) throw invalidDocument(file)
   assertKeys(
     value,
-    ['entity', 'locale', 'parameters', 'processor', 'connectedFields', 'items'],
+    [
+      'entity',
+      'locale',
+      'parameters',
+      'processor',
+      'connectedFields',
+      'deferredFields',
+      'items',
+    ],
     file,
   )
   const {
@@ -122,6 +206,7 @@ function normalizeDocument(
     parameters = {},
     processor,
     connectedFields,
+    deferredFields,
     items,
   } = value
   if (!isFixtureRecord(items)) throw invalidDocument(file)
@@ -131,6 +216,7 @@ function normalizeDocument(
     processor,
     locale,
     connectedFields,
+    deferredFields,
     file,
   )
 
@@ -140,11 +226,12 @@ function normalizeDocument(
       ? path.resolve(path.dirname(file), processor)
       : undefined
   const fixtureConnectedFields = connectedFields as string[] | undefined
+  const fixtureDeferredFields = deferredFields as string[] | undefined
   for (const [rawName, rawData] of Object.entries(items)) {
     if (!isFixtureRecord(rawData)) throw invalidDocument(file)
     const expandedNames = expandName(rawName, file)
     if (expandedNames.length > remaining - definitions.length) {
-      throw new Error('Too many fixture definitions')
+      throw new FixtureDocumentError('Too many fixture definitions')
     }
     for (const { name, current } of expandedNames) {
       const definition: unknown = {
@@ -159,12 +246,16 @@ function normalizeDocument(
         ...(fixtureConnectedFields === undefined
           ? {}
           : { connectedFields: [...fixtureConnectedFields] }),
+        ...(fixtureDeferredFields === undefined
+          ? {}
+          : { deferredFields: [...fixtureDeferredFields] }),
       }
       try {
         assertFixtureDefinition(definition)
       } catch {
         throw invalidDocument(file)
       }
+      fixtureSources.set(definition, { file: path.basename(file) })
       definitions.push(definition)
     }
   }
@@ -261,10 +352,26 @@ export function assertFixtureDefinition(
     'processor',
     'locale',
     'connectedFields',
+    'deferredFields',
   ])
-  const { name, entity, data, parameters, processor, locale, connectedFields } =
-    value
-  assertFixtureMetadata(entity, parameters, processor, locale, connectedFields)
+  const {
+    name,
+    entity,
+    data,
+    parameters,
+    processor,
+    locale,
+    connectedFields,
+    deferredFields,
+  } = value
+  assertFixtureMetadata(
+    entity,
+    parameters,
+    processor,
+    locale,
+    connectedFields,
+    deferredFields,
+  )
   if (
     typeof name !== 'string' ||
     !NAME_PATTERN.test(name) ||
@@ -272,6 +379,14 @@ export function assertFixtureDefinition(
     !isFixtureRecord(data)
   ) {
     throw new Error('Invalid fixture definition')
+  }
+  if (
+    Array.isArray(deferredFields) &&
+    deferredFields.some(
+      (field: string) => field === 'id' || !Object.hasOwn(data, field),
+    )
+  ) {
+    throw new Error('Invalid deferred fixture field')
   }
   assertSafeFixtureValue(value)
 }
@@ -282,6 +397,7 @@ function assertFixtureMetadata(
   processor: unknown,
   locale: unknown,
   connectedFields: unknown,
+  deferredFields: unknown,
   file?: string,
 ) {
   if (
@@ -300,7 +416,18 @@ function assertFixtureMetadata(
             !FIELD_PATTERN.test(field) ||
             DANGEROUS_KEYS.has(field),
         ) ||
-        new Set(connectedFields).size !== connectedFields.length))
+        new Set(connectedFields).size !== connectedFields.length)) ||
+    (deferredFields !== undefined &&
+      (!Array.isArray(deferredFields) ||
+        deferredFields.length === 0 ||
+        deferredFields.some(
+          (field) =>
+            typeof field !== 'string' ||
+            !FIELD_PATTERN.test(field) ||
+            DANGEROUS_KEYS.has(field) ||
+            (Array.isArray(connectedFields) && connectedFields.includes(field)),
+        ) ||
+        new Set(deferredFields).size !== deferredFields.length))
   ) {
     throw file ? invalidDocument(file) : new Error('Invalid fixture definition')
   }
@@ -342,5 +469,8 @@ function assertKeys(
 }
 
 function invalidDocument(file: string) {
-  return new Error(`Invalid fixture document: ${path.basename(file)}`)
+  return new FixtureDocumentError(
+    `Invalid fixture document: ${JSON.stringify(path.basename(file))}`,
+    { file: path.basename(file) },
+  )
 }
