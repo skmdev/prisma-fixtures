@@ -1,4 +1,4 @@
-import { prisma } from '../prisma/client.ts'
+import { db } from '../prisma/client.ts'
 
 Deno.serve(
   { hostname: '127.0.0.1', port: Number(Deno.env.get('PORT') ?? 3000) },
@@ -13,10 +13,10 @@ Deno.serve(
       })
     }
     return Response.json(
-      await prisma.user.findMany({
-        select: { id: true, email: true, name: true, posts: true },
-        orderBy: { id: 'asc' },
-      }),
+      await db.orm.public.User.include('posts')
+        .select('id', 'email', 'name')
+        .orderBy((user) => user.id.asc())
+        .all(),
     )
   },
 )

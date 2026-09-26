@@ -1,13 +1,13 @@
-import { prisma } from '../../../prisma/client'
+import { db } from '../../../prisma/client'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
 export async function GET() {
   return Response.json(
-    await prisma.user.findMany({
-      select: { id: true, email: true, name: true, posts: true },
-      orderBy: { id: 'asc' },
-    }),
+    await db.orm.public.User.include('posts')
+      .select('id', 'email', 'name')
+      .orderBy((user) => user.id.asc())
+      .all(),
   )
 }

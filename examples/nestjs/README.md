@@ -1,26 +1,24 @@
 # NestJS
 
-A minimal Nest controller with a compiled CommonJS Prisma client. Loads three users and three related posts,
+A minimal Nest controller compiled to CommonJS. Loads three users and three related posts,
 and hashes each `User.password` with an async Argon2id fixture processor.
 
 ## Run
 
-Requires Node.js 22.18+ and PostgreSQL.
+Requires Node.js 22.18+ and PostgreSQL 17+.
 
 Start a [disposable database](../README.md#start-postgresql) and export
 `DATABASE_URL` in this shell. From this directory:
 
 ```sh
-npm install
+# First build the local tarball as described in ../README.md
+npm install --no-save ../../skmdev-prisma-fixtures-0.1.1.tgz
 npm run db:generate
 npm run build
 npm run db:push
 npm run db:seed
 npm run dev
 ```
-
-When using this repository before the fixture package is published, follow the
-[local package setup](../README.md#use-the-local-package) instead of `npm install`.
 
 In another terminal:
 
@@ -72,11 +70,10 @@ npm run db:reset       # Clear this example database and reload six fixtures
 
 A second ordinary seed fails on unique emails; reset explicitly when reloading.
 Lint checks structure and references without running the password processor.
-The generated client and fixture JSON Schema live in `src/generated/`.
+The emitted Prisma 8 contract and fixture JSON Schema live in `src/generated/`.
 
-Nest uses `moduleFormat = "cjs"`. `npm run build` compiles both the app and
-generated client into `compiled/`; the fixture CLI discovers that compiled client
-from `tsconfig.json`. Regenerate and rebuild after changing the models.
+`npm run build` compiles the app into `compiled/`; the native Prisma 8 runtime
+loads the emitted contract JSON. Regenerate and rebuild after changing the models.
 [`NodeNext`](https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-8.html)
 models Node.js 22's ability to require NestJS 12's ESM packages from the compiled
 CommonJS application.

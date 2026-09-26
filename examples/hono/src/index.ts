@@ -1,14 +1,14 @@
 import { serve } from '@hono/node-server'
 import { Hono } from 'hono'
-import { prisma } from '../prisma/client.ts'
+import { db } from '../prisma/client.ts'
 
 const app = new Hono()
 app.get('/api/users', async (c) =>
   c.json(
-    await prisma.user.findMany({
-      select: { id: true, email: true, name: true, posts: true },
-      orderBy: { id: 'asc' },
-    }),
+    await db.orm.public.User.include('posts')
+      .select('id', 'email', 'name')
+      .orderBy((user) => user.id.asc())
+      .all(),
   ),
 )
 

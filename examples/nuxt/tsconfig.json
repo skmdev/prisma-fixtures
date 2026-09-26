@@ -1,4 +1,5 @@
 {
+  "compilerOptions": { "resolveJsonModule": true },
   "files": [],
   "references": [
     { "path": "./.nuxt/tsconfig.app.json" },

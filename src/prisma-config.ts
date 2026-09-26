@@ -1,6 +1,8 @@
 import fs from 'node:fs'
 import { createRequire } from 'node:module'
 import path from 'node:path'
+import { pathToFileURL } from 'node:url'
+import { contractPreservedTables } from './prisma8-client'
 
 import {
   normalizeCleanupOptions,
@@ -21,6 +23,28 @@ export async function loadPrismaDefaults(
   const requireFromPrisma = createRequire(
     requireFromCwd.resolve('prisma/package.json'),
   )
+  const version = requireFromPrisma('./package.json').version as string
+  const previousUrl = process.env.DATABASE_URL
+  if (databaseUrlOverride !== undefined) {
+    process.env.DATABASE_URL = databaseUrlOverride
+  }
+  try {
+    return version.startsWith('8.')
+      ? await loadPrisma8Defaults(configRoot, requireFromPrisma)
+      : await loadPrisma7Defaults(configRoot, requireFromPrisma, requireFromCwd)
+  } finally {
+    if (databaseUrlOverride !== undefined) {
+      if (previousUrl === undefined) delete process.env.DATABASE_URL
+      else process.env.DATABASE_URL = previousUrl
+    }
+  }
+}
+
+async function loadPrisma7Defaults(
+  configRoot: string,
+  requireFromPrisma: NodeRequire,
+  requireFromCwd: NodeRequire,
+): Promise<PrismaDefaults> {
   const { loadConfigFromFile } = requireFromPrisma('@prisma/config') as {
     loadConfigFromFile: (options: { configRoot: string }) => Promise<{
       resolvedPath: string | null
@@ -32,19 +56,7 @@ export async function loadPrismaDefaults(
       error?: unknown
     }>
   }
-  const previousUrl = process.env.DATABASE_URL
-  if (databaseUrlOverride !== undefined) {
-    process.env.DATABASE_URL = databaseUrlOverride
-  }
-  let loaded: Awaited<ReturnType<typeof loadConfigFromFile>>
-  try {
-    loaded = await loadConfigFromFile({ configRoot })
-  } finally {
-    if (databaseUrlOverride !== undefined) {
-      if (previousUrl === undefined) delete process.env.DATABASE_URL
-      else process.env.DATABASE_URL = previousUrl
-    }
-  }
+  const loaded = await loadConfigFromFile({ configRoot })
   if (!loaded.resolvedPath || !loaded.config || loaded.error) {
     throw new Error('Prisma config could not be loaded')
   }
@@ -58,6 +70,47 @@ export async function loadPrismaDefaults(
       normalizeCleanupOptions({
         preserveTables: loaded.config.tables?.external ?? [],
       }).preserveTables ?? [],
+  }
+}
+
+async function loadPrisma8Defaults(
+  configRoot: string,
+  requireFromPrisma: NodeRequire,
+): Promise<PrismaDefaults> {
+  const { loadConfigForSections } = (await import(
+    pathToFileURL(
+      requireFromPrisma.resolve('@prisma/orm-toolchain/config-loader'),
+    ).href
+  )) as {
+    loadConfigForSections: (
+      file: string,
+      sections: string[],
+    ) => Promise<{
+      ok: boolean
+      value?: {
+        contract?: { output?: string }
+        db?: { connection?: string }
+        extensions?: unknown[]
+      }
+    }>
+  }
+  const loaded = await loadConfigForSections(
+    path.join(configRoot, 'prisma.config.ts'),
+    ['contract', 'db'],
+  )
+  const config = loaded.ok ? loaded.value : undefined
+  const output = config?.contract?.output
+  if (!output || config?.extensions?.length) {
+    throw new Error(
+      'Prisma 8 config requires an emitted contract and a supported runtime',
+    )
+  }
+  return {
+    module: output,
+    databaseUrl: config?.db?.connection,
+    preserveTables: contractPreservedTables(
+      JSON.parse(fs.readFileSync(output, 'utf8')),
+    ),
   }
 }
 

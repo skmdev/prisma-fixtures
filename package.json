@@ -66,10 +66,12 @@
   "devDependencies": {
     "@prisma/adapter-pg": "7.10.0",
     "@prisma/client": "7.10.0",
+    "@prisma/orm-postgres": "8.0.0-rc.12",
+    "@prisma/prisma7": "7.10.0",
     "@types/ejs": "3.1.5",
     "@types/node": "22.19.15",
     "prettier": "3.8.3",
-    "prisma": "7.10.0",
+    "prisma": "8.0.0-rc.17",
     "typescript": "5.9.3"
   },
   "overrides": {

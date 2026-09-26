@@ -5,6 +5,7 @@
     "types": ["node"],
     "strict": true,
     "skipLibCheck": true,
+    "resolveJsonModule": true,
     "experimentalDecorators": true,
     "emitDecoratorMetadata": true,
     "rootDir": ".",
