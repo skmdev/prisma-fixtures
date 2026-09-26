@@ -108,6 +108,39 @@ test('stable 1.x waits for both verified upstream Prisma v8 stable pins', () => 
   }
 })
 
+test('registry verification waits for propagation but rejects channel drift and timeout', async () => {
+  const { waitForRegistry } = require('../.github/scripts/verify-registry.cjs')
+  let reads = 0
+  const wait = async () => {}
+  await waitForRegistry(manifest, 'v1.0.0-rc.1', '0.1.1', {
+    readTags: () =>
+      ++reads < 3
+        ? { latest: '0.1.1' }
+        : { latest: '0.1.1', next: '1.0.0-rc.1' },
+    wait,
+  })
+  assert.equal(reads, 3)
+  await assert.rejects(
+    waitForRegistry(manifest, 'v1.0.0-rc.1', '0.1.1', {
+      readTags: () => ({ latest: '1.0.0-rc.1', next: '1.0.0-rc.1' }),
+      wait,
+    }),
+    /stable channel changed/,
+  )
+  reads = 0
+  await assert.rejects(
+    waitForRegistry(manifest, 'v1.0.0-rc.1', '0.1.1', {
+      readTags: () => {
+        reads++
+        return { latest: '0.1.1' }
+      },
+      wait,
+    }),
+    /30 attempts/,
+  )
+  assert.equal(reads, 30)
+})
+
 test('release preparation updates a coherent package and examples without accepting stable early', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fixture-release-'))
   const write = (file, content) =>
