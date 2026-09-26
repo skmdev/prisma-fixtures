@@ -5,21 +5,19 @@ and hashes each `User.password` with an async Argon2id fixture processor.
 
 ## Run
 
-Requires Node.js 22.18+ and PostgreSQL.
+Requires Node.js 22.18+ and PostgreSQL 17+.
 
 Start a [disposable database](../README.md#start-postgresql) and export
 `DATABASE_URL` in this shell. From this directory:
 
 ```sh
-npm install
+# First build the local tarball as described in ../README.md
+npm install --no-save ../../skmdev-prisma-fixtures-0.1.1.tgz
 npm run db:generate
 npm run db:push
 npm run db:seed
 npm run dev
 ```
-
-When using this repository before the fixture package is published, follow the
-[local package setup](../README.md#use-the-local-package) instead of `npm install`.
 
 In another terminal:
 
@@ -75,7 +73,7 @@ npm run db:reset       # Clear this example database and reload six fixtures
 
 A second ordinary seed fails on unique emails; reset explicitly when reloading.
 Lint checks structure and references without running the password processor.
-The generated client and fixture JSON Schema live in `src/generated/`.
+The emitted Prisma 8 contract and fixture JSON Schema live in `src/generated/`.
 
 See the [Astro documentation](https://docs.astro.build/en/guides/endpoints/) and
 [Argon2 documentation](https://github.com/ranisalt/node-argon2).

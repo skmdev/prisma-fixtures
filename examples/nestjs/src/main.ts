@@ -1,16 +1,16 @@
 import 'reflect-metadata'
 import { Controller, Get, Module } from '@nestjs/common'
 import { NestFactory } from '@nestjs/core'
-import { prisma } from '../prisma/client'
+import { db } from '../prisma/client'
 
 @Controller('api/users')
 class UsersController {
   @Get()
   users() {
-    return prisma.user.findMany({
-      select: { id: true, email: true, name: true, posts: true },
-      orderBy: { id: 'asc' },
-    })
+    return db.orm.public.User.include('posts')
+      .select('id', 'email', 'name')
+      .orderBy((user) => user.id.asc())
+      .all()
   }
 }
 

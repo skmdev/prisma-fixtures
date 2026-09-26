@@ -396,8 +396,10 @@ function assertFixtureMetadata(
   } = metadata
   if (
     typeof entity !== 'string' ||
-    !NAME_PATTERN.test(entity) ||
-    DANGEROUS_KEYS.has(entity) ||
+    entity.split('.').length > 2 ||
+    entity
+      .split('.')
+      .some((part) => !NAME_PATTERN.test(part) || DANGEROUS_KEYS.has(part)) ||
     !isFixtureRecord(parameters) ||
     (processor !== undefined &&
       (typeof processor !== 'string' || !processor)) ||

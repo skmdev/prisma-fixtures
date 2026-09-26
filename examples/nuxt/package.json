@@ -9,21 +9,20 @@
     "dev": "nuxt dev --host 127.0.0.1",
     "build": "nuxt build",
     "start": "node .output/server/index.mjs",
-    "db:generate": "nuxt prepare && prisma generate",
-    "db:push": "prisma db push",
-    "db:seed": "prisma db seed",
-    "db:reset": "prisma db seed -- --reset",
-    "lint:fixtures": "prisma generate --generator fixtures && prisma-fixtures ./prisma/fixtures --lint --schema src/generated/prisma-fixtures/schema.json"
+    "db:generate": "prisma contract emit && prisma-fixtures-generator src/generated/prisma/contract.json src/generated/prisma-fixtures",
+    "db:push": "prisma db init",
+    "db:seed": "prisma-fixtures",
+    "db:reset": "prisma-fixtures --reset",
+    "lint:fixtures": "npm run db:generate && prisma-fixtures ./prisma/fixtures --lint --schema src/generated/prisma-fixtures/schema.json"
   },
   "dependencies": {
-    "@prisma/adapter-pg": "7.10.0",
-    "@prisma/client": "7.10.0",
+    "@prisma/orm-postgres": "8.0.0-rc.12",
     "nuxt": "4.5.2"
   },
   "devDependencies": {
-    "@skmdev/prisma-fixtures": "0.1.0",
+    "@skmdev/prisma-fixtures": "0.1.1",
     "argon2": "0.45.1",
-    "prisma": "7.10.0",
+    "prisma": "8.0.0-rc.17",
     "@types/node": "22.19.15",
     "typescript": "5.9.3"
   }

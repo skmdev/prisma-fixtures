@@ -2,6 +2,7 @@
 const assert = require('node:assert/strict')
 const { execFileSync } = require('node:child_process')
 const fs = require('node:fs')
+const { createRequire } = require('node:module')
 const os = require('node:os')
 const path = require('node:path')
 
@@ -33,7 +34,21 @@ function write(file, content) {
 async function main() {
   try {
     const packed = JSON.parse(
-      run('npm', ['pack', '--json', '--pack-destination', dir], root),
+      run(
+        'npm',
+        [
+          'pack',
+          ...(process.argv.includes('--published')
+            ? [
+                `${require('../package.json').name}@${require('../package.json').version}`,
+              ]
+            : []),
+          '--json',
+          '--pack-destination',
+          dir,
+        ],
+        root,
+      ),
     )[0]
     assert.ok(packed.files.some(({ path: file }) => file === 'dist/index.d.ts'))
     assert.ok(packed.files.some(({ path: file }) => file === 'dist/cli.js'))
@@ -114,7 +129,13 @@ async function main() {
       'prisma.config.ts',
       `export default { schema: './schema.prisma', datasource: { url: ${JSON.stringify(url)} } }`,
     )
-    const prisma = path.join(root, 'node_modules/prisma/build/index.js')
+    const prisma7 = createRequire(
+      require.resolve('@prisma/prisma7/package.json'),
+    )
+    const prisma = path.join(
+      path.dirname(prisma7.resolve('prisma/package.json')),
+      'build/index.js',
+    )
     run(process.execPath, [prisma, 'generate'])
     assert.ok(fs.existsSync(path.join(dir, 'fixture-schema/schema.json')))
     run(process.execPath, [prisma, 'db', 'push'])
@@ -447,6 +468,12 @@ items:
       'PASS installed CLI database clean/reset and failed-reset rollback',
     )
 
+    await require('./prisma8-integration.cjs')({
+      root,
+      temporary: dir,
+      tarball: path.join(dir, packed.filename),
+      url,
+    })
     await require('./framework-examples.cjs')({
       root,
       dir,

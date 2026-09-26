@@ -32,7 +32,9 @@ import {
 } from './load-options'
 import { createFixtureError, wrapFixtureError } from './fixture-error'
 import { readFixtureConfig } from './fixture-config'
+import { prisma8PreservedTables } from './prisma8-client'
 
+export { createPrisma8FixtureClient } from './prisma8-client'
 export type { FixtureDefinition } from './fixture-document'
 export { FixtureError } from './fixture-error'
 export type { FixtureErrorCode, FixtureErrorContext } from './fixture-error'
@@ -124,13 +126,20 @@ export async function cleanFixtures(
   client: object,
   options?: FixtureCleanupOptions,
 ): Promise<void> {
-  const { preserveTables = [] } = normalizeCleanupOptions(options)
+  const { preserveTables: requestedTables = [] } =
+    normalizeCleanupOptions(options)
   if (
     client === null ||
     (typeof client !== 'object' && typeof client !== 'function')
   ) {
     throw new Error('Invalid fixture cleaner arguments')
   }
+  const preserveTables = [
+    ...new Set([
+      ...requestedTables,
+      ...(prisma8PreservedTables.get(client) ?? []),
+    ]),
+  ]
   const execute = (client as { $executeRawUnsafe?: unknown }).$executeRawUnsafe
   if (typeof execute !== 'function') {
     throw new Error('Fixture cleaner requires $executeRawUnsafe')
@@ -174,7 +183,7 @@ BEGIN
       FROM pg_catalog.pg_class AS candidate
       JOIN pg_catalog.pg_namespace AS namespace ON namespace.oid = candidate.relnamespace
       WHERE candidate.relkind IN ('r', 'p')
-        AND namespace.nspname <> 'information_schema'
+        AND namespace.nspname NOT IN ('information_schema', 'prisma_contract')
         AND namespace.nspname !~ '^pg_'
         AND candidate.relname <> '_prisma_migrations'
         AND NOT EXISTS (
@@ -203,7 +212,7 @@ BEGIN
   )
   INTO tables
   FROM pg_catalog.pg_tables
-  WHERE schemaname <> 'information_schema'
+  WHERE schemaname NOT IN ('information_schema', 'prisma_contract')
     AND schemaname !~ '^pg_'
     AND tablename <> '_prisma_migrations'
     AND NOT EXISTS (

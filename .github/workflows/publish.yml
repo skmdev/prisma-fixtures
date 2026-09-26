@@ -9,7 +9,6 @@ concurrency:
   cancel-in-progress: false
 jobs:
   verify:
-    if: ${{ !github.event.release.prerelease }}
     uses: ./.github/workflows/ci.yml
   publish:
     needs: verify
@@ -24,15 +23,25 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '24'
-          registry-url: https://registry.npmjs.org
       - name: Check release version
+        id: release
         env:
           RELEASE_TAG: ${{ github.event.release.tag_name }}
-        run: |
-          node -e 'const assert = require("node:assert/strict"); const { version } = require("./package.json"); assert.match(version, /^\d+\.\d+\.\d+$/); assert.equal(process.env.RELEASE_TAG, "v" + version)'
+          RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
+        run: node .github/scripts/release.cjs
       - run: npm install --global npm@11
       - run: npm ci
-      - run: npm publish --access public
+      - name: Record current stable channel
+        id: registry
+        run: echo "latest=$(npm view @skmdev/prisma-fixtures dist-tags.latest)" >> "$GITHUB_OUTPUT"
+      - name: Publish package
+        run: npm publish --access public --tag "$RELEASE_CHANNEL"
         env:
-          # Optional, only for the first publish before npm trusted publishing exists.
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          RELEASE_CHANNEL: ${{ steps.release.outputs.channel }}
+      - name: Verify registry channels and installed package
+        env:
+          RELEASE_CHANNEL: ${{ steps.release.outputs.channel }}
+          PREVIOUS_LATEST: ${{ steps.registry.outputs.latest }}
+        run: |
+          node -e 'const assert = require("node:assert/strict"); const { execFileSync } = require("node:child_process"); const { name, version } = require("./package.json"); const tags = JSON.parse(execFileSync("npm", ["view", name, "dist-tags", "--json"], { encoding: "utf8" })); assert.equal(tags[process.env.RELEASE_CHANNEL], version); if (process.env.RELEASE_CHANNEL === "next") assert.equal(tags.latest, process.env.PREVIOUS_LATEST)'
+          npm run test:integration -- --published

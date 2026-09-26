@@ -1,4 +1,4 @@
-import { prisma } from '../prisma/client.ts'
+import { db } from '../prisma/client.ts'
 
 Bun.serve({
   hostname: '127.0.0.1',
@@ -7,10 +7,10 @@ Bun.serve({
     '/api/users': {
       GET: async () =>
         Response.json(
-          await prisma.user.findMany({
-            select: { id: true, email: true, name: true, posts: true },
-            orderBy: { id: 'asc' },
-          }),
+          await db.orm.public.User.include('posts')
+            .select('id', 'email', 'name')
+            .orderBy((user) => user.id.asc())
+            .all(),
         ),
     },
   },

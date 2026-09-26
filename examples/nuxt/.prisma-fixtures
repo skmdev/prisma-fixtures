@@ -3,7 +3,7 @@
     "./prisma/fixtures"
   ],
   "client": {
-    "module": "./src/generated/prisma/client.ts",
+    "module": "./src/generated/prisma/contract.json",
     "adapter": "pg"
   }
 }

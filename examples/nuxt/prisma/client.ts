@@ -1,15 +1,15 @@
-import { PrismaPg } from '@prisma/adapter-pg'
-import { PrismaClient } from '../src/generated/prisma/client.ts'
+import postgres from '@prisma/orm-postgres/runtime'
+import type { Contract } from '../src/generated/prisma/contract.d'
+import contractJson from '../src/generated/prisma/contract.json' with { type: 'json' }
 
 const connectionString = process.env.DATABASE_URL
 if (!connectionString) throw new Error('DATABASE_URL is required')
 
-const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient }
+type Db = ReturnType<typeof postgres<Contract>>
+const globalForPrisma = globalThis as unknown as { db?: Db }
 
-export const prisma =
-  globalForPrisma.prisma ??
-  new PrismaClient({
-    adapter: new PrismaPg({ connectionString }),
-  })
+export const db =
+  globalForPrisma.db ??
+  postgres<Contract>({ contractJson, url: connectionString })
 
-if (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = prisma
+if (process.env.NODE_ENV !== 'production') globalForPrisma.db = db

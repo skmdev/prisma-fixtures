@@ -58,9 +58,9 @@
   },
   "definitions": {
     "entityName": {
-      "description": "Prisma model/delegate name.",
+      "description": "Prisma model/delegate name, optionally namespace-qualified for v8.",
       "type": "string",
-      "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$"
+      "pattern": "^(?:[A-Za-z][A-Za-z0-9_-]{0,127}\\.)?[A-Za-z][A-Za-z0-9_-]{0,127}$"
     },
     "fieldName": {
       "description": "Prisma relation field name.",

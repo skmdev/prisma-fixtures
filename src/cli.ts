@@ -17,6 +17,7 @@ import { normalizeLoadOptions } from './load-options'
 import { loadPrismaDefaults } from './prisma-config'
 import { type FixtureConfig, readFixtureConfig } from './fixture-config'
 import { cleanFixtures, loadFixtures, resetFixtures } from './index'
+import { createPrisma8FixtureClient } from './prisma8-client'
 
 const help = `Usage: prisma-fixtures [path...] [--client <module>] [options]
        prisma-fixtures init [fixtures-directory]
@@ -324,11 +325,26 @@ async function loadClient(config: FixtureConfig, values: CliOptions) {
     if (typeof databaseUrl !== 'string' || !databaseUrl.trim()) {
       throw new Error('DATABASE_URL is required')
     }
-    const generated = await importGeneratedClient(
-      clientConfig.module,
-      requireFromCwd,
-    )
-    candidate = createGeneratedClient(generated, requireFromCwd, databaseUrl)
+    if (path.extname(clientConfig.module) === '.json') {
+      const { default: postgres } = (await import(
+        pathToFileURL(requireFromCwd.resolve('@prisma/orm-postgres/runtime'))
+          .href
+      )) as {
+        default: (options: { contractJson: unknown; url: string }) => object
+      }
+      const contractJson: unknown = JSON.parse(
+        fs.readFileSync(clientConfig.module, 'utf8'),
+      )
+      candidate = createPrisma8FixtureClient(
+        postgres({ contractJson, url: databaseUrl }),
+      )
+    } else {
+      const generated = await importGeneratedClient(
+        clientConfig.module,
+        requireFromCwd,
+      )
+      candidate = createGeneratedClient(generated, requireFromCwd, databaseUrl)
+    }
   }
   if (
     !candidate ||

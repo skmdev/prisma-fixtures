@@ -143,7 +143,7 @@ module.exports = async function checkExamples({
         ...(name === 'nuxt'
           ? {
               client: {
-                module: './src/generated/prisma/client.ts',
+                module: './src/generated/prisma/contract.json',
                 adapter: 'pg',
               },
             }
@@ -158,20 +158,16 @@ module.exports = async function checkExamples({
     if (name === 'nestjs') npm('build')
     npm('db:push')
     assert.match(npm('db:seed'), /Loaded 6 fixtures/)
-    const clientPath =
-      name === 'nestjs'
-        ? './compiled/src/generated/prisma/client.js'
-        : `./src/generated/prisma/client.${name === 'nuxt' ? 'ts' : 'mts'}`
     fs.writeFileSync(
       path.join(cwd, 'check-fixtures.mjs'),
       `
       import assert from 'node:assert/strict'
       import { verify } from 'argon2'
-      import { PrismaPg } from '@prisma/adapter-pg'
-      import { PrismaClient } from '${clientPath}'
-      const prisma = new PrismaClient({adapter:new PrismaPg({connectionString:process.env.DATABASE_URL})})
+      import postgres from '@prisma/orm-postgres/runtime'
+      import contractJson from './src/generated/prisma/contract.json' with {type:'json'}
+      const db = postgres({contractJson,url:process.env.DATABASE_URL})
       try {
-        const users = await prisma.user.findMany({include:{posts:true},orderBy:{id:'asc'}})
+        const users = await db.orm.public.User.include('posts').orderBy(user=>user.id.asc()).all()
         assert.equal(users.length, 3)
         for (const [index, user] of users.entries()) {
           assert.equal(user.email, 'user' + (index + 1) + '@example.test')
@@ -182,7 +178,7 @@ module.exports = async function checkExamples({
           assert.equal(await verify(user.password, 'wrong-password'), false)
         }
         console.log(JSON.stringify(users))
-      } finally { await prisma.$disconnect() }
+      } finally { await db.close() }
     `,
     )
     const check = () =>
@@ -212,34 +208,43 @@ module.exports = async function checkExamples({
       check()
     }
     if (name === 'nestjs') {
-      const config = path.join(cwd, 'prisma.config.ts')
+      const fixtureConfig = path.join(cwd, '.prisma-fixtures')
       fs.writeFileSync(
-        config,
-        fs
-          .readFileSync(config, 'utf8')
-          .replace(
-            '  migrations: {',
-            "  experimental: { externalTables: true },\n  tables: { external: ['public.fixture_audit'] },\n  migrations: {",
-          ),
+        fixtureConfig,
+        `${JSON.stringify(
+          {
+            ...JSON.parse(fs.readFileSync(fixtureConfig, 'utf8')),
+            preserveTables: ['public.fixture_audit'],
+          },
+          null,
+          2,
+        )}\n`,
       )
       fs.writeFileSync(
         path.join(cwd, 'check-external.mjs'),
         `
         import assert from 'node:assert/strict'
-        import { PrismaPg } from '@prisma/adapter-pg'
-        import { PrismaClient } from '${clientPath}'
-        const prisma = new PrismaClient({adapter:new PrismaPg({connectionString:process.env.DATABASE_URL})})
+        import postgres from '@prisma/orm-postgres/runtime'
+        import contractJson from './src/generated/prisma/contract.json' with {type:'json'}
+        const db = postgres({contractJson,url:process.env.DATABASE_URL})
         try {
           if (process.argv[2] === 'create') {
-            await prisma.$executeRawUnsafe('CREATE TABLE fixture_audit (id int PRIMARY KEY)')
-            await prisma.$executeRawUnsafe('INSERT INTO fixture_audit VALUES (1)')
+            await db.runtime().execute(db.raw.sql\`CREATE TABLE fixture_audit (id int PRIMARY KEY)\`.affectedCount().build())
+            await db.runtime().execute(db.raw.sql\`INSERT INTO fixture_audit VALUES (1)\`.affectedCount().build())
           } else {
             const count = process.argv[2] === 'reset' ? 3 : 0
-            assert.equal(await prisma.user.count(), count)
-            assert.equal(await prisma.post.count(), count)
-            assert.deepEqual(await prisma.$queryRawUnsafe('SELECT id FROM fixture_audit'), [{id:1}])
+            assert.equal((await db.orm.public.User.all()).length, count)
+            assert.equal((await db.orm.public.Post.all()).length, count)
+            assert.deepEqual(
+              await db.runtime().query(
+                db.raw.sql\`SELECT id FROM fixture_audit\`
+                  .returnsRow({id:'pg/int4@1'})
+                  .build(),
+              ),
+              [{id:1}],
+            )
           }
-        } finally { await prisma.$disconnect() }
+        } finally { await db.close() }
       `,
       )
       const external = (action) =>
