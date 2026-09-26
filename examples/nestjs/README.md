@@ -12,7 +12,7 @@ Start a [disposable database](../README.md#start-postgresql) and export
 
 ```sh
 # First build the local tarball as described in ../README.md
-npm install --no-save ../../skmdev-prisma-fixtures-0.1.1.tgz
+npm install --no-save ../../skmdev-prisma-fixtures-1.0.0-rc.1.tgz
 npm run db:generate
 npm run build
 npm run db:push

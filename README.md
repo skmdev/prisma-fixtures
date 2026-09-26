@@ -159,7 +159,7 @@ npm ci
 npm pack
 
 # In the Prisma application
-npm install --no-save /path/to/skmdev-prisma-fixtures-0.1.1.tgz
+npm install --no-save /path/to/skmdev-prisma-fixtures-1.0.0-rc.1.tgz
 ```
 
 An existing multi-file Prisma 7 schema can be the source for an emitted Prisma 8
