@@ -1,6 +1,6 @@
 {
   "name": "@skmdev/prisma-fixtures",
-  "version": "0.1.1",
+  "version": "1.0.0-rc.1",
   "description": "YAML and JSON fixtures with references, templates and processors for Prisma.",
   "license": "MIT",
   "author": "skmdev <skmdev29@gmail.com>",

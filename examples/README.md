@@ -96,7 +96,7 @@ npm pack
 Then, from your chosen `examples/<name>` directory, use:
 
 ```sh
-npm install --no-save ../../skmdev-prisma-fixtures-0.1.1.tgz
+npm install --no-save ../../skmdev-prisma-fixtures-1.0.0-rc.1.tgz
 ```
 
 This installs the example's dependencies and this checkout's fixture package.

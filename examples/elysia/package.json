@@ -20,7 +20,7 @@
     "elysia": "1.4.30"
   },
   "devDependencies": {
-    "@skmdev/prisma-fixtures": "0.1.1",
+    "@skmdev/prisma-fixtures": "1.0.0-rc.1",
     "argon2": "0.45.1",
     "prisma": "8.0.0-rc.17",
     "@types/node": "22.19.15",
