@@ -1,0 +1,55 @@
+name: Prepare release
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'New package version (use 1.0.0-rc.1 while Prisma 8 is prerelease)'
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: prepare-release
+  cancel-in-progress: false
+jobs:
+  prepare:
+    if: github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    env:
+      RELEASE_VERSION: ${{ inputs.version }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24'
+      - name: Update release version and examples
+        run: node .github/scripts/prepare-release.cjs
+      - name: Create release pull request and start CI
+        env:
+          BASE_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          branch="codex/release-$RELEASE_VERSION"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git switch -c "$branch"
+          git add -- package.json package-lock.json README.md CONTRIBUTING.md examples/README.md examples/*/package.json examples/*/README.md
+          git commit -m "chore: prepare v$RELEASE_VERSION"
+          gh auth setup-git
+          git push "https://github.com/$GITHUB_REPOSITORY.git" "HEAD:refs/heads/$branch"
+          cat > "$RUNNER_TEMP/release-pr.md" <<'BODY'
+          Prepare the package version, lockfile, example dependencies and local tarball instructions for this release.
+
+          CI is dispatched explicitly because GITHUB_TOKEN pushes do not start push workflows and automated pull request workflows may require approval. Wait for both Node 22 and Node 24 checks before merging.
+
+          After merging, publish a matching GitHub Release. Numbered RC versions must be marked as prereleases and publish to npm next. Stable 1.x must wait for verified stable Prisma 8 CLI and runtime pins.
+          BODY
+          gh pr create --base "$BASE_BRANCH" --head "$branch" --title "chore: prepare v$RELEASE_VERSION" --body-file "$RUNNER_TEMP/release-pr.md"
+          gh workflow run ci.yml --ref "$branch"
