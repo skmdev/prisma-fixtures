@@ -2,6 +2,16 @@ name: Publish to npm
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Published tag to verify; must match the selected branch package version
+        required: true
+        type: string
+      previous_latest:
+        description: npm latest version recorded before publication (required for RC verification)
+        required: true
+        type: string
 permissions:
   contents: read
 concurrency:
@@ -9,13 +19,17 @@ concurrency:
   cancel-in-progress: false
 jobs:
   verify:
+    if: github.event_name == 'release'
     uses: ./.github/workflows/ci.yml
   publish:
+    if: github.event_name == 'release'
     needs: verify
     runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
+    outputs:
+      previous_latest: ${{ steps.registry.outputs.latest }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -38,10 +52,25 @@ jobs:
         run: npm publish --access public --tag "$RELEASE_CHANNEL"
         env:
           RELEASE_CHANNEL: ${{ steps.release.outputs.channel }}
+  verify-registry:
+    name: Verify published package
+    needs: publish
+    if: ${{ !cancelled() && (needs.publish.result == 'success' || github.event_name == 'workflow_dispatch') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24'
+      - run: npm ci
       - name: Verify registry channels and installed package
         env:
-          RELEASE_CHANNEL: ${{ steps.release.outputs.channel }}
-          PREVIOUS_LATEST: ${{ steps.registry.outputs.latest }}
+          RELEASE_TAG: ${{ inputs.release_tag || github.event.release.tag_name }}
+          PREVIOUS_LATEST: ${{ needs.publish.outputs.previous_latest || inputs.previous_latest }}
         run: |
-          node -e 'const assert = require("node:assert/strict"); const { execFileSync } = require("node:child_process"); const { name, version } = require("./package.json"); const tags = JSON.parse(execFileSync("npm", ["view", name, "dist-tags", "--json"], { encoding: "utf8" })); assert.equal(tags[process.env.RELEASE_CHANNEL], version); if (process.env.RELEASE_CHANNEL === "next") assert.equal(tags.latest, process.env.PREVIOUS_LATEST)'
+          node .github/scripts/verify-registry.cjs
           npm run test:integration -- --published

@@ -89,6 +89,15 @@ when both the repository and package are public.
 5. Wait for the workflow to succeed and review its registry and dist-tag
    verification before announcing the release.
 
-If a check fails, publishing is blocked. Fix the failure before releasing; an
-already published npm version cannot be overwritten. Prepare a new version through
-the action to correct a published release.
+Checks before publication block publishing when they fail. After publication,
+registry verification waits up to five minutes for npm's distribution tag to
+become visible, then installs and tests that exact published version.
+
+If publication succeeds but registry verification fails, use **Publish to npm →
+Run workflow** on a branch or tag containing the same package version. Enter its
+`v<version>` release tag and the previous `latest` value recorded in the original
+run. A manual run only verifies the existing registry package: it never publishes
+or changes npm tags. The separate **Verify published package** job can also be
+rerun on its own. Do not rerun a completed publishing job; an already published npm
+version cannot be overwritten. Prepare a new version through the action when the
+package itself needs a fix.
