@@ -47,7 +47,7 @@ If the npm package does not exist yet, create it with the first workflow run:
    **Bypass two-factor authentication** enabled.
 3. Add it as the GitHub repository Actions secret **NPM_TOKEN** under
    **Settings → Secrets and variables → Actions**.
-4. Follow the release steps below for `0.1.0`.
+4. Follow the release steps below using the version in `package.json`.
 5. Once the package exists, configure trusted publishing below, delete the
    GitHub `NPM_TOKEN` secret and revoke the temporary token in npm.
 
@@ -71,12 +71,12 @@ when both the repository and package are public.
 
 ### Release a version
 
-1. Choose an unused version. For the first release, keep the existing `0.1.0`;
+1. Choose an unused version. For the first release, keep the version in `package.json`;
    for later releases, run `npm version patch`, `minor` or `major` from a clean
    working tree. This updates both package manifests and creates a commit and tag.
 2. Run the development checks above and inspect `npm publish --dry-run`.
 3. Push the release commit and its `v<version>` tag. For the first release, create
-   `v0.1.0` with `git tag v0.1.0` after committing the workflow changes.
+   the matching `v<version>` tag after committing the workflow changes.
 4. On GitHub, create and publish a Release using that tag. The tag's commit must
    contain both workflows. A tag push alone does not publish to npm.
 5. Wait for **Publish to npm** to succeed, then check

@@ -410,7 +410,10 @@ items:
 `,
   )
   assert.match(run(['--help'], dir).stdout, /--client/)
-  assert.equal(run(['--version'], dir).stdout.trim(), '0.1.0')
+  assert.equal(
+    run(['--version'], dir).stdout.trim(),
+    require('../package.json').version,
+  )
   const result = run(['users.yml', '--list', '--require', './missing.cjs'], dir)
   assert.equal(result.status, 0, result.stderr)
   assert.deepEqual(JSON.parse(result.stdout), [
@@ -971,7 +974,7 @@ items:
   assert.equal(help.status, 0, help.stderr)
   assert.match(help.stdout, /--config/)
   assert.equal(version.status, 0, version.stderr)
-  assert.equal(version.stdout.trim(), '0.1.0')
+  assert.equal(version.stdout.trim(), require('../package.json').version)
   assert.doesNotMatch(
     help.stdout + help.stderr + version.stdout + version.stderr,
     /PRIVATE/,

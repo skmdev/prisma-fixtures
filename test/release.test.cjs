@@ -6,6 +6,13 @@ const path = require('node:path')
 const { test } = require('node:test')
 const { parse } = require('yaml')
 
+test('built package commands are executable before npm installs or links them', () => {
+  const { bin } = require('../package.json')
+  for (const target of Object.values(bin)) {
+    fs.accessSync(path.join(__dirname, '..', target), fs.constants.X_OK)
+  }
+})
+
 test('release version guard rejects mismatched tags and prerelease versions', (t) => {
   const workflow = parse(
     fs.readFileSync(

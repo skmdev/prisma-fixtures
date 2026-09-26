@@ -1,6 +1,6 @@
 {
   "name": "@skmdev/prisma-fixtures",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "YAML and JSON fixtures with references, templates and processors for Prisma.",
   "license": "MIT",
   "author": "skmdev <skmdev29@gmail.com>",
@@ -45,7 +45,7 @@
     "access": "public"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node -e \"for (const file of Object.values(require('./package.json').bin)) require('node:fs').chmodSync(file, 0o755)\"",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "prettier --check .",
     "lint:fixtures": "npm run build && npm exec --yes --package=. -- node test/lint-examples.cjs",
